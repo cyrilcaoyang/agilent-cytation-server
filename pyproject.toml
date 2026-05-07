@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agilent-cytation-server"
+version = "0.1.0"
+description = "PyLabRobot-backed driver and STATUS_SPEC REST API for the BioTek (Agilent) Cytation 5 plate reader (lab status spec v1.0)"
+readme = "README.md"
+authors = [
+    { name = "Yang Cao", email = "cyrilcaoyang@gmail.com" },
+]
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["pylabrobot", "cytation", "biotek", "agilent", "plate-reader", "lab-automation"]
+
+# Core dependencies are intentionally minimal so dev / CI installs on
+# macOS / Linux do not pull in the (Windows-only) USB stack. The real
+# Cytation backend is installed via the ``plr`` extra (and ``windows``
+# extra for the libusb shims). Tests on the dev box exercise the
+# in-memory stub driver only and never import pylabrobot.
+dependencies = [
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.6",
+]
+plr = [
+    # PyLabRobot's PlateReader frontend + Cytation 5 backend. Lazy-imported
+    # by `agilent_cytation_server.reader` so it is only required when
+    # `dry_run = false` and a real Cytation is being driven.
+    "pylabrobot>=0.2.1",
+]
+windows = [
+    # PyLabRobot's USB transport. Requires Zadig to bind the Cytation USB
+    # endpoint to libusbK on the lab PC (see README).
+    "pyusb>=1.2; sys_platform == 'win32'",
+    "libusb-package>=1.0; sys_platform == 'win32'",
+]
+dev = [
+    "pytest>=7.0",
+    "httpx>=0.27",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.6",
+]
+
+[project.scripts]
+agilent-cytation-serve = "agilent_cytation_server.__main__:main"
+
+[project.urls]
+Repository = "https://github.com/cyrilcaoyang/agilent-cytation-server"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-q --tb=short"

@@ -1,0 +1,50 @@
+{
+  "allowed_actions": [],
+  "components": {
+    "imaging": {
+      "connected": false,
+      "last_event_at": null,
+      "message": null,
+      "state": "disconnected"
+    },
+    "incubator": {
+      "connected": false,
+      "last_event_at": null,
+      "message": null,
+      "state": "disconnected"
+    },
+    "optics": {
+      "connected": false,
+      "last_event_at": null,
+      "message": null,
+      "state": "disconnected"
+    },
+    "plate_stage": {
+      "connected": false,
+      "last_event_at": null,
+      "message": null,
+      "state": "unknown"
+    }
+  },
+  "details": {
+    "backend": "cytation5",
+    "drawer": "unknown",
+    "imaging_enabled": true,
+    "loaded_plate": null
+  },
+  "device_time": "2026-04-29T22:50:01Z",
+  "equipment_id": "cytation_5",
+  "equipment_kind": "plate_reader",
+  "equipment_name": "BioTek Cytation 5",
+  "equipment_status": "requires_init",
+  "equipment_version": null,
+  "host": "cytation-pc",
+  "last_error": null,
+  "message": "Driver not connected. POST /control/startup will graduate to v1.1; restart the service to retry.",
+  "metrics": {},
+  "protocol_version": "1.0",
+  "required_actions": [
+    "startup"
+  ],
+  "uptime_seconds": 0.0
+}

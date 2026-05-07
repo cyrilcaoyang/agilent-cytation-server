@@ -1,0 +1,79 @@
+# ── BioTek Cytation 5 — service configuration ────────────────────────
+# Copy this file to config.toml and edit to match your hardware setup:
+#   Copy-Item config.example.toml config.toml
+#
+# config.toml is gitignored — your local settings stay on the lab PC.
+#
+# Conformance: this service implements lab status spec v1.0 (read-only).
+# Claim/heartbeat/release and /control/* writes graduate to v1.1 in a
+# follow-up release. See the ac-organic-lab monorepo's
+# docs/STATUS_SPEC.md and docs/STATUS_SPEC_v1_1.md for the contract.
+
+[instrument]
+# PyLabRobot backend. "cytation5" creates a real CytationBackend at
+# startup; "dry_run" forces the in-memory stub regardless of [service].
+backend = "cytation5"
+# Optional: lock onto a specific Cytation if multiple are present.
+# Leave empty to let PyLabRobot enumerate automatically.
+usb_serial = ""
+
+[imaging]
+# Set false on a Cytation 5 without the microscopy module so the
+# `imaging` component is hidden from /status (avoids advertising a
+# capability the device cannot honor).
+enabled = true
+
+[plates]
+# Default plate model used by Phase 2 sample tracking. One of:
+#   custom_96            — shop-built 96-well plate (geometry below)
+#   agilent_shallow_96   — Agilent shallow-well plate (geometry below)
+default_model = "custom_96"
+# Persisted Deck snapshot path (gitignored). Phase 2 writes the
+# currently-loaded Plate + per-well sample/volume state here so a
+# service restart does not lose run context.
+state_path = "./state.json"
+
+[plates.custom_96]
+# Phase 0 placeholders — measure the real plate before going to
+# production. Volume tracking lies if these are wrong.
+size_x = 127.76
+size_y = 85.48
+size_z = 14.5
+well_dx = 9.0
+well_dy = 9.0
+well_size_x = 6.5
+well_size_y = 6.5
+well_size_z = 11.0
+well_max_volume_ul = 350.0
+
+[plates.agilent_shallow_96]
+size_x = 127.76
+size_y = 85.48
+size_z = 7.5
+well_dx = 9.0
+well_dy = 9.0
+well_size_x = 6.5
+well_size_y = 6.5
+well_size_z = 5.0
+well_max_volume_ul = 200.0
+
+# ── REST API service ────────────────────────────────────────────────
+# Used by `python -m agilent_cytation_server` / `agilent-cytation-serve`.
+[service]
+host = "0.0.0.0"                # Bind address (Tailscale-only by ACL)
+# Port 9333 was chosen to avoid the 8000-cluster used by other lab
+# devices (xArm runs on 8000 on this same PC) and to stay out of common
+# dev ports (3000 / 5000 / 8080 / 8443 / 8888 / 9000). If 9333 is
+# already in use on this PC, fall back to 8765 or 9742.
+port = 9333
+dry_run = false                 # true = stub driver (CI / dev / non-Windows)
+cors_origins = ["*"]            # Tailnet ACLs gate access, so * is fine
+startup_connect_timeout_s = 30.0  # PLR Cytation setup is slow (~10-30s)
+
+# ── Dashboard identity ──────────────────────────────────────────────
+# Reported in GET /status. Must match the entry in the dashboard's
+# `equipment.yaml` (id is the canonical key the aggregator joins on).
+[dashboard]
+equipment_id = "cytation_5"
+equipment_name = "BioTek Cytation 5"
+# equipment_version = "0.1.0"   # optional - bump on driver releases

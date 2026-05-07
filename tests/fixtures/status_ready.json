@@ -1,0 +1,59 @@
+{
+  "allowed_actions": [],
+  "components": {
+    "imaging": {
+      "connected": true,
+      "last_event_at": null,
+      "message": null,
+      "state": "idle"
+    },
+    "incubator": {
+      "connected": true,
+      "last_event_at": null,
+      "message": null,
+      "state": "at_setpoint"
+    },
+    "optics": {
+      "connected": true,
+      "last_event_at": null,
+      "message": null,
+      "state": "idle"
+    },
+    "plate_stage": {
+      "connected": true,
+      "last_event_at": null,
+      "message": null,
+      "state": "in"
+    }
+  },
+  "details": {
+    "backend": "cytation5",
+    "drawer": "in",
+    "imaging_enabled": true,
+    "loaded_plate": null
+  },
+  "device_time": "2026-04-29T22:50:01Z",
+  "equipment_id": "cytation_5",
+  "equipment_kind": "plate_reader",
+  "equipment_name": "BioTek Cytation 5",
+  "equipment_status": "ready",
+  "equipment_version": null,
+  "host": "cytation-pc",
+  "last_error": null,
+  "message": "Idle, ready to read",
+  "metrics": {
+    "actual_temperature": {
+      "timestamp": "2026-04-29T22:50:01Z",
+      "unit": "C",
+      "value": 37.0
+    },
+    "read_count": {
+      "timestamp": null,
+      "unit": "count",
+      "value": 0
+    }
+  },
+  "protocol_version": "1.0",
+  "required_actions": [],
+  "uptime_seconds": 0.0
+}

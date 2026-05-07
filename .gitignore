@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+
+# Machine-specific config (use config.example.toml as template)
+config.toml
+
+# Persisted PyLabRobot Deck snapshot (Phase 2 — sample tracking)
+state.json
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Vendor docs (potentially copyrighted — keep local only)
+docs/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local smoke / NSSM logs
+.smoke.*.log
+*.nssm.log

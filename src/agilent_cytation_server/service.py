@@ -1,0 +1,326 @@
+"""Service layer that exposes the Cytation 5 driver as a spec-compliant
+``EquipmentStatus`` source.
+
+Why this exists
+---------------
+The PyLabRobot ``PlateReader`` is asynchronous but not concurrency-safe:
+only one caller may talk to the backend at a time. The dashboard polls
+``GET /status`` every 2-3 seconds while operators may concurrently fire
+control commands (Phase 3+). The service owns:
+
+* a single reader instance (real :class:`CytationReader` or
+  :class:`StubCytationReader`),
+* an ``asyncio.Lock`` that serialises every call into the reader,
+* a small in-memory state machine (``_busy_state``, ``_last_error``,
+  ``_drawer``, ``_last_read_at``) used to compute the spec
+  ``equipment_status`` field,
+* a :meth:`get_status` method that produces a fresh
+  :class:`EquipmentStatus` envelope without ever issuing a write to
+  the device.
+
+If PyLabRobot cannot be loaded (non-Windows host, missing pyusb,
+hardware off) ``dry_run=True`` swaps in :class:`StubCytationReader`
+so the API surface stays identical and the dashboard tile can be
+exercised end-to-end on macOS / Linux.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import socket
+import time
+from datetime import datetime, timezone
+from typing import Any, Callable
+
+from . import config as _config
+from .models import (
+    PROTOCOL_VERSION,
+    ComponentStatus,
+    EquipmentStatus,
+    ErrorInfo,
+    MetricValue,
+)
+from .reader import StubCytationReader, make_reader
+
+logger = logging.getLogger(__name__)
+
+
+# Window during which a recent error keeps the device in `error` state.
+# After this, if no further failures land, the device falls back to
+# `ready` / `degraded` (matches the convention used by agilent_plateloc).
+_RECENT_ERROR_WINDOW_S = 60.0
+
+
+class CytationService:
+    """Wraps a :class:`CytationReader` (or :class:`StubCytationReader`)
+    and produces spec-compliant :class:`EquipmentStatus` snapshots.
+
+    Concurrency: all driver I/O happens inside ``self._lock``. Status
+    reads share the same lock so a poll cannot interleave with a write.
+    """
+
+    def __init__(
+        self,
+        *,
+        dry_run: bool = False,
+        reader_factory: Callable[[], Any] | None = None,
+    ) -> None:
+        self.dry_run = dry_run
+        self._reader_factory = reader_factory
+        self._reader: Any | None = None
+        self._lock = asyncio.Lock()
+        self._started_at = time.monotonic()
+        self._last_error: ErrorInfo | None = None
+        self._busy_state: bool = False
+        self._drawer: str = "unknown"
+        self._last_read_at: float | None = None  # time.monotonic()
+        self._read_count: int = 0
+
+        # Identity (configurable so a deployment can override).
+        self.equipment_id: str = _config.get("dashboard", "equipment_id", "cytation_5")
+        self.equipment_name: str = _config.get(
+            "dashboard", "equipment_name", "BioTek Cytation 5"
+        )
+        self.equipment_kind = "plate_reader"
+        self.equipment_version: str | None = _config.get(
+            "dashboard", "equipment_version", None
+        )
+        self.imaging_enabled: bool = bool(_config.get("imaging", "enabled", True))
+        self.usb_serial: str = str(_config.get("instrument", "usb_serial", "") or "")
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def _create_reader(self) -> Any:
+        if self._reader_factory is not None:
+            return self._reader_factory()
+        return make_reader(dry_run=self.dry_run, usb_serial=self.usb_serial or None)
+
+    async def startup(self) -> None:
+        """Create (or reuse) the reader and connect.
+
+        On failure, leaves the service in ``requires_init`` and re-raises
+        so callers (lifespan / a future ``/control/startup``) can decide
+        whether to log-and-continue or surface a 503.
+        """
+        async with self._lock:
+            if self._reader is not None and self._reader.is_connected():
+                return
+            self._reader = self._create_reader()
+            try:
+                await self._reader.setup()
+                self._last_error = None
+                # Reader assumes drawer is in unless it tells us otherwise.
+                self._drawer = "in"
+            except Exception as exc:
+                self._record_error(exc, "startup")
+                raise
+
+    async def shutdown(self) -> None:
+        """Best-effort disconnect. Never raises."""
+        async with self._lock:
+            if self._reader is None:
+                return
+            try:
+                await self._reader.stop()
+            except Exception:
+                logger.exception("Error while stopping reader")
+            finally:
+                self._reader = None
+                self._busy_state = False
+                self._drawer = "unknown"
+
+    # ------------------------------------------------------------------
+    # Status (side-effect-free)
+    # ------------------------------------------------------------------
+
+    async def get_status(self) -> EquipmentStatus:
+        """Produce a fresh status snapshot. MUST NOT mutate hardware state.
+
+        The spec requires this endpoint to be safe to call every 2-3
+        seconds and to always return HTTP 200 unless the process itself
+        is broken. Per-getter failures fold into ``degraded`` rather
+        than raise.
+        """
+
+        async with self._lock:
+            return await self._build_status_locked()
+
+    async def _build_status_locked(self) -> EquipmentStatus:
+        now = datetime.now(timezone.utc)
+        uptime = time.monotonic() - self._started_at
+        host = _safe_hostname()
+
+        # ---- not connected: requires_init ------------------------------
+        if self._reader is None or not self._reader.is_connected():
+            return EquipmentStatus(
+                protocol_version=PROTOCOL_VERSION,
+                equipment_id=self.equipment_id,
+                equipment_name=self.equipment_name,
+                equipment_kind=self.equipment_kind,  # type: ignore[arg-type]
+                equipment_version=self.equipment_version,
+                host=host,
+                equipment_status="requires_init",
+                message=(
+                    "Driver not connected. POST /control/startup will "
+                    "graduate to v1.1; restart the service to retry."
+                ),
+                required_actions=["startup"],
+                allowed_actions=[],
+                device_time=now,
+                uptime_seconds=uptime,
+                components=self._disconnected_components(),
+                # Stage state is unknown when disconnected; keep details
+                # in sync with components.plate_stage.state.
+                details=self._base_details(loaded_plate=None, drawer_override="unknown"),
+                last_error=self._last_error,
+            )
+
+        # ---- read what we can; never let a single getter fail status -----
+        metrics: dict[str, MetricValue] = {}
+        details: dict[str, Any] = self._base_details(loaded_plate=None)
+        readback_errors: list[str] = []
+
+        actual_temp = await self._safe_read(
+            "actual_temperature", self._reader.get_temperature, readback_errors
+        )
+        if actual_temp is not None:
+            metrics["actual_temperature"] = MetricValue(
+                value=float(actual_temp), unit="C", timestamp=now
+            )
+
+        if self._last_read_at is not None:
+            metrics["last_read_seconds_ago"] = MetricValue(
+                value=round(time.monotonic() - self._last_read_at, 3),
+                unit="s",
+            )
+        metrics["read_count"] = MetricValue(value=int(self._read_count), unit="count")
+
+        # ---- top-level equipment_status --------------------------------
+        if self.dry_run:
+            state: str = "dry_run"
+            message: str | None = "Dry-run mode - no hardware connected"
+            details["dry_run"] = True
+        elif self._busy_state:
+            state = "busy"
+            message = "Plate reader operation in progress"
+        elif self._last_error is not None and (
+            (now - self._last_error.timestamp).total_seconds()
+            < _RECENT_ERROR_WINDOW_S
+        ):
+            state = "error"
+            message = self._last_error.message
+        elif readback_errors:
+            state = "degraded"
+            message = "; ".join(readback_errors)
+        else:
+            state = "ready"
+            message = "Idle, ready to read"
+
+        components = self._connected_components(actual_temp)
+
+        return EquipmentStatus(
+            protocol_version=PROTOCOL_VERSION,
+            equipment_id=self.equipment_id,
+            equipment_name=self.equipment_name,
+            equipment_kind=self.equipment_kind,  # type: ignore[arg-type]
+            equipment_version=self.equipment_version,
+            host=host,
+            equipment_status=state,  # type: ignore[arg-type]
+            message=message,
+            allowed_actions=[],  # populated when v1.1 ships
+            device_time=now,
+            uptime_seconds=uptime,
+            components=components,
+            metrics=metrics,
+            last_error=self._last_error,
+            details=details,
+        )
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
+
+    async def _safe_read(
+        self,
+        label: str,
+        coro_fn: Callable[[], Any],
+        readback_errors: list[str],
+    ) -> Any:
+        """Run an ``async`` getter and capture failures into
+        ``readback_errors`` instead of raising. Synchronous getters work
+        too: we ``await`` them iff they return an awaitable."""
+        try:
+            value = coro_fn()
+            if asyncio.iscoroutine(value):
+                value = await value
+            return value
+        except Exception as exc:
+            readback_errors.append(f"{label}: {exc}")
+            return None
+
+    def _disconnected_components(self) -> dict[str, ComponentStatus]:
+        comps: dict[str, ComponentStatus] = {
+            "optics": ComponentStatus(connected=False, state="disconnected"),
+            "incubator": ComponentStatus(connected=False, state="disconnected"),
+            "plate_stage": ComponentStatus(connected=False, state="unknown"),
+        }
+        if self.imaging_enabled:
+            comps["imaging"] = ComponentStatus(connected=False, state="disconnected")
+        return comps
+
+    def _connected_components(
+        self, actual_temp: float | None
+    ) -> dict[str, ComponentStatus]:
+        optics_state = "busy" if self._busy_state else "idle"
+        if actual_temp is None:
+            incubator_state = "unknown"
+        elif actual_temp >= 30.0:  # Cytation incubator default range; arbitrary
+            incubator_state = "at_setpoint"
+        else:
+            incubator_state = "off"
+        comps: dict[str, ComponentStatus] = {
+            "optics": ComponentStatus(connected=True, state=optics_state),
+            "incubator": ComponentStatus(connected=True, state=incubator_state),
+            "plate_stage": ComponentStatus(connected=True, state=self._drawer),
+        }
+        if self.imaging_enabled:
+            comps["imaging"] = ComponentStatus(
+                connected=True,
+                state="busy" if self._busy_state else "idle",
+            )
+        return comps
+
+    def _base_details(
+        self,
+        *,
+        loaded_plate: dict[str, Any] | None,
+        drawer_override: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "drawer": drawer_override if drawer_override is not None else self._drawer,
+            "backend": str(_config.get("instrument", "backend", "cytation5")),
+            "imaging_enabled": self.imaging_enabled,
+            "loaded_plate": loaded_plate,  # populated in Phase 2
+        }
+
+    def _record_error(self, exc: Exception, code: str) -> None:
+        self._last_error = ErrorInfo(
+            code=code,
+            message=str(exc),
+            severity="error",
+            timestamp=datetime.now(timezone.utc),
+        )
+        logger.exception("Cytation error in %s", code)
+
+
+def _safe_hostname() -> str | None:
+    try:
+        return socket.gethostname()
+    except OSError:
+        return None
+
+
+__all__ = ["CytationService", "StubCytationReader"]
