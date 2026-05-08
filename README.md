@@ -48,17 +48,16 @@ C:\SDL_Tools\uv.exe sync --extra api --extra plr --extra windows
 
 For **production deployment** (NSSM-wrapped Windows Service that auto-starts on boot, logs to `C:\SDL_Logs\cytation.{out,err}.log`), follow the canonical recipe in [`ac-organic-lab/docs/DEVICE_PC_SETUP.md`](https://github.com/cyrilcaoyang/ac-organic-lab/blob/main/docs/DEVICE_PC_SETUP.md). The Cytation 5 PC also runs the xArm service on port 8000; this Cytation service uses port **9333** to avoid conflicts.
 
+For **day-to-day operations on the lab PC** (driver swaps for Gen5 ↔ PyLabRobot, log tailing, restart, update from `git pull`), see [`RUNBOOK.md`](./RUNBOOK.md).
+
 ## USB driver setup
 
-PyLabRobot's USB backends speak through `pyusb`/`libusb`. On Windows you must rebind the Cytation USB endpoint from the vendor driver to **libusbK** the first time:
+The Cytation 5 has **two** USB connections to the host PC:
 
-1. Install [Zadig](https://zadig.akeo.ie/).
-2. Plug the Cytation in and power it on.
-3. Open Zadig **as Administrator** → menu **Options** → **List All Devices**.
-4. Find the Cytation in the dropdown.
-5. Pick **libusbK (vX.X.X.X)** as the target driver and click **Replace Driver**.
+- **Reader (drawer / optics / incubator / shaker)** — driven by an internal FTDI USB-serial chip. Bound to FTDI's vendor driver out of the box (which is what Gen5 uses). To let PyLabRobot drive the reader, this chip must be rebound to **libusbK** via [Zadig](https://zadig.akeo.ie/) — but doing so prevents Gen5 from seeing the device until you swap back. **The two stacks cannot both have the FTDI chip at the same time.**
+- **Microscopy camera (Cytation 5 imaging module)** — Point Grey / FLIR Blackfly under the **Spinnaker SDK**. Same driver Gen5 already uses. **No swap needed.**
 
-After that, `python -c "from pylabrobot.plate_reading.biotek import Cytation5Backend"` should import without error and the service can connect.
+If your lab does not use Gen5 on this PC, run Zadig once and forget about it. If your lab still uses Gen5, run [`RUNBOOK.md`](./RUNBOOK.md) procedure §3 / §4 to toggle between modes — the cytation REST service stays installed in both, falling back to `dry_run` while Gen5 has the FTDI chip so the dashboard tile never goes orphan.
 
 If multiple Cytations are on the same PC, set `[instrument].usb_serial = "..."` in `config.toml` to lock onto a specific one.
 
@@ -113,6 +112,7 @@ Reference snapshots live in `tests/fixtures/status_*.json` covering `requires_in
 ```
 agilent-cytation-server/
 ├── README.md
+├── RUNBOOK.md                   # day-to-day ops on the lab PC (driver swaps, restart, update)
 ├── LICENSE
 ├── pyproject.toml
 ├── config.example.toml          # template — copy to config.toml
