@@ -22,8 +22,13 @@ state.json
 *.suo
 *.user
 
-# Vendor docs (potentially copyrighted — keep local only)
-docs/
+# Vendor docs.
+# We track an index + lab-authored notes, but the actual BioTek/Agilent
+# PDFs and Gen5 protocol files are vendor-copyrighted — keep them under
+# docs/vendor/ on the lab PC only, never push to GitHub.
+docs/vendor/
+docs/protocols/*.prt
+docs/protocols/*.exp
 
 # OS
 Thumbs.db
