@@ -40,6 +40,8 @@ windows = [
     # endpoint to libusbK on the lab PC (see README).
     "pyusb>=1.2; sys_platform == 'win32'",
     "libusb-package>=1.0; sys_platform == 'win32'",
+    # pylabrobot.io.ftdi (Cytation 5 backend) imports pylibftdi.
+    "pylibftdi>=0.20; sys_platform == 'win32'",
 ]
 dev = [
     "pytest>=7.0",

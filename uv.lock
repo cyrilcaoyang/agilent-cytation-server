@@ -28,6 +28,7 @@ plr = [
 ]
 windows = [
     { name = "libusb-package", marker = "sys_platform == 'win32'" },
+    { name = "pylibftdi", marker = "sys_platform == 'win32'" },
     { name = "pyusb", marker = "sys_platform == 'win32'" },
 ]
 
@@ -40,6 +41,7 @@ requires-dist = [
     { name = "pydantic", marker = "extra == 'api'", specifier = ">=2.6" },
     { name = "pydantic", marker = "extra == 'dev'", specifier = ">=2.6" },
     { name = "pylabrobot", marker = "extra == 'plr'", specifier = ">=0.2.1" },
+    { name = "pylibftdi", marker = "sys_platform == 'win32' and extra == 'windows'", specifier = ">=0.20" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "pyusb", marker = "sys_platform == 'win32' and extra == 'windows'", specifier = ">=1.2" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
@@ -433,6 +435,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/be/fe/a9b60b1267812e74ab9a3ca796a35591db2c529e940ed87b370d5de8ea59/pylabrobot-0.2.1.tar.gz", hash = "sha256:4caff5054c003cc887e4befb6d73d93ba015fb1cf3187f2dc95506c9141bd564", size = 1000583, upload-time = "2026-03-23T04:40:35.082Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fb/c0/4a1d8d6d6ec6d4fc1c1f25257c3a71be07b438698fb24eedf7c14bc14313/pylabrobot-0.2.1-py3-none-any.whl", hash = "sha256:8b7b58d1c31a7b19b9d6a11f10ba1303c6222b6a582a8a95f18c6abcf41408cd", size = 1174640, upload-time = "2026-03-23T04:40:33.168Z" },
+]
+
+[[package]]
+name = "pylibftdi"
+version = "0.24.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/19/5f/f0e03128161fff27d4f92d57b7fab20fa64e9bcd53627442d2ef43b8882c/pylibftdi-0.24.0.tar.gz", hash = "sha256:e2229bc10d077f018cbe7b2b490227b2b538643fa6f7bff132cde15549ca129b", size = 32255, upload-time = "2026-04-04T10:59:00.171Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/16/09/9891a561c1aedf31c546624f715e626cbb16b179be93514f7cb0abf07083/pylibftdi-0.24.0-py3-none-any.whl", hash = "sha256:8b3ba2a2106bc50a8bb551772433ebc7eb52d22a03c75fff6552de5ada6c4127", size = 33176, upload-time = "2026-04-04T10:58:58.997Z" },
 ]
 
 [[package]]

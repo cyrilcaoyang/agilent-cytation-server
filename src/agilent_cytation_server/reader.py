@@ -29,6 +29,84 @@ from . import config as _config
 logger = logging.getLogger(__name__)
 
 
+_FTDI_ENUMERATION_PATCHED = False
+
+
+def _patch_pylabrobot_ftdi_enumeration() -> None:
+    """Make PyLabRobot's FTDI device enumeration skip devices libusb can't open.
+
+    PyLabRobot's ``FTDI._resolve_device_serial`` walks every FTDI-VID/PID
+    device on the bus and calls ``usb.util.get_string`` on each to read
+    its serial number. ``get_string`` requires opening the device, which
+    fails on Windows with ``NotImplementedError("Operation not supported
+    or unimplemented on this platform")`` for any FTDI device bound to
+    the FTDI vendor driver (FTDIBUS/FTSER2K) rather than libusbK. The
+    upstream code catches ``ValueError`` in its diagnostic-listing loop
+    but not in the candidate loop, so a single co-resident FTDI VCP on
+    the PC blocks the Cytation from ever being matched.
+
+    This patch wraps the serial read in a broader ``try/except`` so
+    unopenable devices are skipped instead of aborting enumeration.
+    """
+    global _FTDI_ENUMERATION_PATCHED
+    if _FTDI_ENUMERATION_PATCHED:
+        return
+
+    from typing import cast
+    import pylibftdi.driver
+    import usb.core
+    import usb.util
+    from pylabrobot.io.ftdi import FTDI
+
+    def _resolve_device_serial(self) -> str:
+        search_kwargs: dict[str, Any] = {}
+        if self._vid is not None:
+            search_kwargs["idVendor"] = self._vid
+        if self._pid is not None:
+            search_kwargs["idProduct"] = self._pid
+
+        candidates = []
+        skipped = []
+        for device in usb.core.find(find_all=True, **search_kwargs):
+            if self._vid is None and device.idVendor not in pylibftdi.driver.USB_VID_LIST:
+                continue
+            if self._vid is not None and device.idVendor != self._vid:
+                continue
+            if self._pid is None and device.idProduct not in pylibftdi.driver.USB_PID_LIST:
+                continue
+            if self._pid is not None and device.idProduct != self._pid:
+                continue
+
+            try:
+                serial = usb.util.get_string(device, device.iSerialNumber)
+            except (NotImplementedError, usb.core.USBError, ValueError) as exc:
+                skipped.append(f"{device.idVendor:04x}:{device.idProduct:04x} ({type(exc).__name__}: {exc})")
+                continue
+
+            if self._device_id is not None and serial != self._device_id:
+                continue
+            candidates.append((device, serial))
+
+        if skipped:
+            logger.info("Skipped %d FTDI device(s) libusb could not open: %s", len(skipped), skipped)
+
+        if len(candidates) == 0:
+            raise RuntimeError(
+                f"No FTDI devices matched device_id={self._device_id!r}. "
+                f"Skipped {len(skipped)} unopenable device(s): {skipped}."
+            )
+        if len(candidates) > 1:
+            raise RuntimeError(
+                f"Multiple FTDI devices matched device_id={self._device_id!r}; "
+                "pin device_id explicitly in config.toml [instrument].usb_serial."
+            )
+        return cast(str, candidates[0][1])
+
+    FTDI._resolve_device_serial = _resolve_device_serial
+    _FTDI_ENUMERATION_PATCHED = True
+    logger.info("Patched pylabrobot.io.ftdi.FTDI._resolve_device_serial to skip unopenable devices")
+
+
 class CytationReader:
     """Real PyLabRobot-backed Cytation 5 reader.
 
@@ -56,7 +134,7 @@ class CytationReader:
         """
         try:
             from pylabrobot.plate_reading import PlateReader  # type: ignore[import-not-found]
-            from pylabrobot.plate_reading.biotek import (  # type: ignore[import-not-found]
+            from pylabrobot.plate_reading.agilent.biotek_cytation_backend import (  # type: ignore[import-not-found]
                 Cytation5Backend,
             )
         except ImportError as exc:  # pragma: no cover - exercised on dev boxes only
@@ -65,9 +143,11 @@ class CytationReader:
                 "Install with `uv sync --extra plr --extra windows`."
             ) from exc
 
+        _patch_pylabrobot_ftdi_enumeration()
+
         backend_kwargs: dict[str, Any] = {}
         if self.usb_serial:
-            backend_kwargs["serial_number"] = self.usb_serial
+            backend_kwargs["device_id"] = self.usb_serial
 
         backend = Cytation5Backend(**backend_kwargs)
         # The PlateReader frontend wraps the backend in PLR's resource
