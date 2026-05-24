@@ -10,11 +10,9 @@ package is published; once it is, replace this file with::
     )
 
 Conformance: agilent-cytation-server REST API conforms to lab status
-spec v1.0 (read-only). Specific unit operations (``read.absorbance``,
-``read.fluorescence``, ``read.luminescence``, ``imaging.capture``,
-``plate.load``, ``plate.unload``, ``drawer.open``, ``drawer.close``)
-will be promoted to ``/control/*`` and v1.1 (claim/heartbeat/release)
-in a follow-up release.
+spec v1.0 (read-only). Phase 2 adds per-well sample tracking surfaced
+under ``details.loaded_plate``. ``/control/*`` writes + claim
+protocol graduate to v1.1 in Phase 3.
 """
 
 from __future__ import annotations
@@ -127,6 +125,43 @@ class HealthResponse(BaseModel):
     status: Literal["healthy"] = "healthy"
 
 
+# ---------------------------------------------------------------------------
+# Phase 2: per-well sample tracking models
+#
+# Surfaced under ``EquipmentStatus.details.loaded_plate`` so they ride
+# the v1.0 envelope without requiring a schema bump. The orchestrator
+# owns ``sample_id`` (workflows assign it on plate.load); the device
+# is the source of truth for ``volume_ul`` (mutated by reads / dosing).
+# ---------------------------------------------------------------------------
+
+
+WellId = str  # "A1" .. "H12"
+
+
+class WellSample(BaseModel):
+    """One well of the currently-loaded plate."""
+
+    well: WellId
+    sample_id: str | None = None
+    volume_ul: float | None = Field(default=None, ge=0.0)
+    notes: str | None = None
+
+
+class LoadedPlate(BaseModel):
+    """The plate currently sitting on the Cytation's stage.
+
+    ``model`` is one of the keys in ``[plates.*]`` in ``config.toml`` /
+    ``agilent_cytation_server.plates.PLATE_FACTORIES``. ``plate_id`` is
+    a free-form orchestrator-assigned identifier (typically a barcode
+    or run-prefixed UUID).
+    """
+
+    plate_id: str
+    model: str
+    loaded_at: datetime
+    wells: list[WellSample] = Field(default_factory=list)
+
+
 __all__ = [
     "PROTOCOL_VERSION",
     "EquipmentKind",
@@ -138,4 +173,7 @@ __all__ = [
     "EquipmentStatus",
     "ProbeResponse",
     "HealthResponse",
+    "WellId",
+    "WellSample",
+    "LoadedPlate",
 ]

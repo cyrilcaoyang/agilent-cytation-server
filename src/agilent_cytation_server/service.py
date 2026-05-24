@@ -39,8 +39,11 @@ from .models import (
     ComponentStatus,
     EquipmentStatus,
     ErrorInfo,
+    LoadedPlate,
     MetricValue,
+    WellSample,
 )
+from .plate_state import PlateStateStore
 from .reader import StubCytationReader, make_reader
 
 logger = logging.getLogger(__name__)
@@ -65,6 +68,7 @@ class CytationService:
         *,
         dry_run: bool = False,
         reader_factory: Callable[[], Any] | None = None,
+        plate_state: PlateStateStore | None = None,
     ) -> None:
         self.dry_run = dry_run
         self._reader_factory = reader_factory
@@ -88,6 +92,15 @@ class CytationService:
         )
         self.imaging_enabled: bool = bool(_config.get("imaging", "enabled", True))
         self.usb_serial: str = str(_config.get("instrument", "usb_serial", "") or "")
+        self.default_plate_model: str = str(
+            _config.get("plates", "default_model", "custom_96")
+        )
+
+        # Phase 2: per-well sample tracking.
+        if plate_state is None:
+            state_path = _config.get("plates", "state_path", "./state.json")
+            plate_state = PlateStateStore(state_path=state_path)
+        self.plate_state = plate_state
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -174,13 +187,13 @@ class CytationService:
                 components=self._disconnected_components(),
                 # Stage state is unknown when disconnected; keep details
                 # in sync with components.plate_stage.state.
-                details=self._base_details(loaded_plate=None, drawer_override="unknown"),
+                details=self._base_details(drawer_override="unknown"),
                 last_error=self._last_error,
             )
 
         # ---- read what we can; never let a single getter fail status -----
         metrics: dict[str, MetricValue] = {}
-        details: dict[str, Any] = self._base_details(loaded_plate=None)
+        details: dict[str, Any] = self._base_details()
         readback_errors: list[str] = []
 
         actual_temp = await self._safe_read(
@@ -240,6 +253,56 @@ class CytationService:
         )
 
     # ------------------------------------------------------------------
+    # Phase 2: per-well sample tracking
+    # ------------------------------------------------------------------
+
+    async def load_plate(
+        self,
+        *,
+        plate_id: str,
+        model: str | None = None,
+        wells: list[WellSample] | None = None,
+    ) -> LoadedPlate:
+        """Register a plate as physically loaded on the stage.
+
+        Persisted to ``state.json`` so service restarts keep the
+        orchestrator's view of "what's loaded" coherent. Does **not**
+        move the drawer — that's a separate operation (Phase 3
+        ``/control/drawer/{open,close}``).
+        """
+        chosen = model or self.default_plate_model
+        async with self._lock:
+            return self.plate_state.load_plate(
+                plate_id=plate_id, model=chosen, wells=wells
+            )
+
+    async def unload_plate(self) -> LoadedPlate | None:
+        """Clear the currently-loaded plate. Returns the prior plate (if any)."""
+        async with self._lock:
+            return self.plate_state.unload_plate()
+
+    async def update_well(
+        self,
+        well: str,
+        *,
+        sample_id: str | None = None,
+        volume_ul: float | None = None,
+        notes: str | None = None,
+        clear_sample_id: bool = False,
+        clear_notes: bool = False,
+    ) -> WellSample:
+        """Mutate a single well's sample / volume / notes."""
+        async with self._lock:
+            return self.plate_state.update_well(
+                well,
+                sample_id=sample_id,
+                volume_ul=volume_ul,
+                notes=notes,
+                clear_sample_id=clear_sample_id,
+                clear_notes=clear_notes,
+            )
+
+    # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
 
@@ -296,14 +359,14 @@ class CytationService:
     def _base_details(
         self,
         *,
-        loaded_plate: dict[str, Any] | None,
         drawer_override: str | None = None,
     ) -> dict[str, Any]:
+        plate = self.plate_state.get()
         return {
             "drawer": drawer_override if drawer_override is not None else self._drawer,
             "backend": str(_config.get("instrument", "backend", "cytation5")),
             "imaging_enabled": self.imaging_enabled,
-            "loaded_plate": loaded_plate,  # populated in Phase 2
+            "loaded_plate": plate.model_dump(mode="json") if plate else None,
         }
 
     def _record_error(self, exc: Exception, code: str) -> None:

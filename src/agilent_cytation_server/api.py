@@ -39,6 +39,7 @@ from .models import (
     HealthResponse,
     ProbeResponse,
 )
+from .plate_state import PlateStateStore
 from .service import CytationService
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ logger = logging.getLogger(__name__)
 def create_app(
     *,
     dry_run: bool | None = None,
+    plate_state: PlateStateStore | None = None,
 ) -> FastAPI:
     """Build the FastAPI application.
 
@@ -55,11 +57,15 @@ def create_app(
     dry_run:
         Force dry-run mode regardless of ``config.toml``. ``None`` means
         "use the config file". Tests pass ``True`` to keep CI hardware-free.
+    plate_state:
+        Optional pre-constructed :class:`PlateStateStore` (tests use a
+        ``tmp_path``-scoped store; production builds one from
+        ``[plates].state_path`` in ``config.toml``).
     """
     if dry_run is None:
         dry_run = bool(_config.get("service", "dry_run", False))
 
-    service = CytationService(dry_run=dry_run)
+    service = CytationService(dry_run=dry_run, plate_state=plate_state)
     startup_timeout = float(_config.get("service", "startup_connect_timeout_s", 30.0))
 
     @asynccontextmanager
