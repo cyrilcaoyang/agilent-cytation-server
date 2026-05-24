@@ -28,10 +28,20 @@ from pathlib import Path
 
 from PIL import Image as PILImage
 
-from pylabrobot.plate_reading.agilent.biotek_cytation_backend import Cytation5Backend
-from pylabrobot.plate_reading.standard import ImagingMode, Objective
-
 from agilent_cytation_server.plates import agilent_shallow_96
+from agilent_cytation_server.reader import _patch_pylabrobot_ftdi_enumeration
+
+# Apply the same enumeration patch the live service uses, so a co-resident
+# FTDIBUS-bound FTDI device (e.g. the COM4 USB-serial port) does not abort
+# pylabrobot's FTDI device enumeration before the Cytation is matched.
+_patch_pylabrobot_ftdi_enumeration()
+
+from pylabrobot.plate_reading.agilent.biotek_cytation_backend import (  # noqa: E402
+    Cytation5Backend,
+)
+from pylabrobot.plate_reading.standard import ImagingMode, Objective  # noqa: E402
+
+from agilent_cytation_server import config as _config  # noqa: E402
 
 
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "captures"
@@ -56,7 +66,12 @@ def pick_objective(installed: list[Objective | None], want_low_mag: bool = True)
 async def run(focal_height_mm: float, exposure_ms: float, gain: float) -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    backend = Cytation5Backend()
+    instrument_cfg = _config.get_section("instrument")
+    usb_serial = instrument_cfg.get("usb_serial") if isinstance(instrument_cfg, dict) else None
+    backend_kwargs = {"device_id": usb_serial} if usb_serial else {}
+    log.info("Constructing Cytation5Backend(%s) ...", backend_kwargs)
+    backend = Cytation5Backend(**backend_kwargs)
+
     log.info("Connecting (use_cam=True) ...")
     await backend.setup(use_cam=True)
 

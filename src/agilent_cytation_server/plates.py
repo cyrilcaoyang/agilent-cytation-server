@@ -90,7 +90,8 @@ def _build_plate(name: str, model: str, geometry: PlateGeometry | None) -> Any:
         geometry = PlateGeometry.from_config(model)
 
     try:  # noqa: SIM105 - we want a clear error message
-        from pylabrobot.resources import Plate, Well, create_equally_spaced_2d
+        from pylabrobot.resources import Plate, Well
+        from pylabrobot.resources.utils import create_ordered_items_2d
     except ImportError as exc:
         raise ImportError(
             "pylabrobot is required to build a real Plate resource. "
@@ -98,7 +99,7 @@ def _build_plate(name: str, model: str, geometry: PlateGeometry | None) -> Any:
             "the lab PC)."
         ) from exc
 
-    items = create_equally_spaced_2d(
+    ordered_items = create_ordered_items_2d(
         Well,
         num_items_x=12,
         num_items_y=8,
@@ -117,7 +118,7 @@ def _build_plate(name: str, model: str, geometry: PlateGeometry | None) -> Any:
         size_x=geometry.size_x,
         size_y=geometry.size_y,
         size_z=geometry.size_z,
-        items=items,
+        ordered_items=ordered_items,
     )
 
 
