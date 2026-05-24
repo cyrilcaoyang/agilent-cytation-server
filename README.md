@@ -2,16 +2,16 @@
 
 PyLabRobot-backed Python driver and REST API service for the **BioTek (Agilent) Cytation 5 Multi-Mode Reader**, communicating over USB. Driver layer is `pylabrobot.plate_reading.PlateReader` + `pylabrobot.plate_reading.biotek.Cytation5Backend`. The service exposes the unified lab equipment status spec so the AC Organic Self-Driving Lab dashboard can poll it like any other device.
 
-> **API conformance:** This repo conforms to **lab status spec v1.0 (read-only)** — see `docs/STATUS_SPEC.md` in the [`ac-organic-lab`](https://github.com/cyrilcaoyang/ac-organic-lab) monorepo. There is no `/control/*` claim/heartbeat/release surface yet; specific unit operations (`read.absorbance`, `read.fluorescence`, `read.luminescence`, `imaging.capture`, `plate.load`, `plate.unload`, `drawer.open`, `drawer.close`) graduate to `/control/*` and v1.1 in a follow-up release. Until then, the SDK in `ac-organic-lab` keeps `do_not_call_connect: true` for this device.
+> **API conformance:** This repo conforms to **lab status spec v1.1** — see `docs/STATUS_SPEC.md` in the [`ac-organic-lab`](https://github.com/cyrilcaoyang/ac-organic-lab) monorepo. The full `/control/*` write surface is wired (drawer, reads, plate load/unload, imaging capture, claim/heartbeat/release). Hardware verification against the real Cytation 5 is still pending — see `RUNBOOK.md` §3-§4 before flipping `protocol: "1.1"` in the dashboard's `equipment.yaml`.
 
 ## Roadmap
 
 | Phase | Output | Status |
 |---|---|---|
-| **0+1** | STATUS_SPEC v1.0 read-only API on the Cytation PC; `equipment.yaml` flips from `mock` to `http`. | this PR |
-| **2** | Per-well sample tracking via PyLabRobot `Container`/`Plate`/`Well` (volume tracking + orchestrator-assigned `sample_id`). Surfaced under `details.loaded_plate`. | follow-up |
-| **3** | STATUS_SPEC v1.1: `POST /control/claim`, `/heartbeat`, `/release`, `allowed_actions`, full `/control/*` write surface (drawer, reads, plate load/unload, imaging capture, incubator). | follow-up |
-| **4** | `lab_skills/skill_catalog/plate_reader.py` registered in the monorepo so workflows can `await session.role("plate_reader").read_absorbance(...)`. | follow-up |
+| **0+1** | STATUS_SPEC v1.0 read-only API on the Cytation PC; `equipment.yaml` flips from `mock` to `http`. | ✅ shipped |
+| **2** | Per-well sample tracking via persistent `PlateStateStore`; surfaced under `details.loaded_plate`. | ✅ shipped |
+| **3** | STATUS_SPEC v1.1: `POST /control/claim`, `/heartbeat`, `/release`, `allowed_actions`, full `/control/*` write surface (drawer, reads, plate load/unload, imaging capture). | ✅ shipped — dry-run tested, hardware verification pending |
+| **4** | `lab_skills/skill_catalog/plate_reader.py` registered in the monorepo so workflows can `await session.role("plate_reader").read_absorbance(...)`. | draft in `docs/phase4_handoff.md`; needs to be applied on the central server |
 
 ## Prerequisites
 
@@ -80,7 +80,7 @@ All instrument-specific settings live in `config.toml` (gitignored). Copy `confi
 
 ## REST API
 
-Spec-mandated endpoints (always available):
+Spec-mandated read endpoints (always available):
 
 | Method | Path | Returns |
 |---|---|---|
@@ -88,6 +88,30 @@ Spec-mandated endpoints (always available):
 | GET | `/health` | `{status: "healthy"}` |
 | GET | `/status` | full `EquipmentStatus` envelope (always 200 unless the process is broken) |
 | GET | `/openapi.json` | OpenAPI document (FastAPI auto-generates) |
+
+v1.1 claim protocol:
+
+| Method | Path | Body / headers | Returns |
+|---|---|---|---|
+| POST | `/control/claim` | `{owner, session_id, ttl_s?}` | `{claim_token, heartbeat_interval_s, expires_at}` |
+| POST | `/control/heartbeat` | `X-Claim-Token` | 204 (extends TTL) |
+| POST | `/control/release` | `X-Claim-Token` | 204 (idempotent) |
+
+v1.1 control verbs (all require `X-Claim-Token` when `[service].enforce_claims = true`; otherwise advisory):
+
+| Method | Path | Body |
+|---|---|---|
+| POST | `/control/startup` | — |
+| POST | `/control/shutdown` | — |
+| POST | `/control/drawer/open` | `{}` |
+| POST | `/control/drawer/close` | `{}` |
+| POST | `/control/plate/load` | `{plate_id, model?, wells?}` |
+| POST | `/control/plate/unload` | — |
+| POST | `/control/well/update` | `{well, sample_id?, volume_ul?, notes?, clear_sample_id?, clear_notes?}` |
+| POST | `/control/read/absorbance` | `{wells, wavelength_nm}` |
+| POST | `/control/read/fluorescence` | `{wells, excitation_nm, emission_nm, gain?, focal_height_mm?}` |
+| POST | `/control/read/luminescence` | `{wells, integration_time_s?, gain?}` |
+| POST | `/control/imaging/capture` | `{well, channel, focal_height_mm?, exposure_ms?, gain?}` |
 
 ### Quick check
 

@@ -218,12 +218,115 @@ class CytationReader:
             raise RuntimeError("Cytation reader is not connected")
         await self._reader.close()
 
+    # ------------------------------------------------------------------
+    # Phase 3 read methods -- thin delegation to PyLabRobot.
+    #
+    # The exact kwarg names on PyLabRobot's PlateReader / Cytation5Backend
+    # have drifted across versions; we delegate via getattr so a name
+    # change surfaces as a clear RuntimeError instead of an AttributeError
+    # deep in the call stack. Hardware verification of these against the
+    # real Cytation is required before flipping protocol to "1.1" in the
+    # dashboard's equipment.yaml -- see RUNBOOK.md §3-§4.
+    # ------------------------------------------------------------------
+
+    async def read_absorbance(
+        self,
+        *,
+        wells: list[str],
+        wavelength_nm: float,
+    ) -> dict[str, float]:
+        return await self._delegate_read(
+            "read_absorbance",
+            wells=wells,
+            wavelength=wavelength_nm,
+        )
+
+    async def read_fluorescence(
+        self,
+        *,
+        wells: list[str],
+        excitation_nm: float,
+        emission_nm: float,
+        gain: float = 50.0,
+        focal_height_mm: float = 7.0,
+    ) -> dict[str, float]:
+        return await self._delegate_read(
+            "read_fluorescence",
+            wells=wells,
+            excitation_wavelength=excitation_nm,
+            emission_wavelength=emission_nm,
+            gain=gain,
+            focal_height=focal_height_mm,
+        )
+
+    async def read_luminescence(
+        self,
+        *,
+        wells: list[str],
+        integration_time_s: float = 1.0,
+        gain: float = 50.0,
+    ) -> dict[str, float]:
+        return await self._delegate_read(
+            "read_luminescence",
+            wells=wells,
+            integration_time=integration_time_s,
+            gain=gain,
+        )
+
+    async def capture_image(
+        self,
+        *,
+        well: str,
+        channel: str,
+        focal_height_mm: float = 5.0,
+        exposure_ms: float = 10.0,
+        gain: float = 1.0,
+    ) -> dict[str, Any]:
+        if self._reader is None:
+            raise RuntimeError("Cytation reader is not connected")
+        capture_fn = getattr(self._reader, "capture_image", None)
+        if capture_fn is None:
+            raise RuntimeError(
+                "PyLabRobot PlateReader does not expose capture_image; the "
+                "imaging surface graduates with a future PyLabRobot release."
+            )
+        return await capture_fn(
+            well=well,
+            channel=channel,
+            focal_height=focal_height_mm,
+            exposure_ms=exposure_ms,
+            gain=gain,
+        )
+
+    async def _delegate_read(self, attr: str, **kwargs: Any) -> dict[str, float]:
+        if self._reader is None:
+            raise RuntimeError("Cytation reader is not connected")
+        fn = getattr(self._reader, attr, None)
+        if fn is None:
+            raise RuntimeError(
+                f"PyLabRobot PlateReader does not expose {attr}; verify the "
+                "installed pylabrobot version matches what the cytation "
+                "server expects."
+            )
+        result = await fn(**kwargs)
+        # PyLabRobot returns either a dict[well, value] or a list keyed
+        # by well index; normalise to dict[well, value] using the
+        # well-list the caller supplied.
+        if isinstance(result, dict):
+            return {str(k): float(v) for k, v in result.items()}
+        wells = kwargs.get("wells", [])
+        return {str(w): float(v) for w, v in zip(wells, result)}
+
 
 class StubCytationReader:
     """In-memory Cytation stub for dry-run / non-Windows development.
 
     Mirrors the public surface of :class:`CytationReader` so the
     service code path is identical regardless of which one is wired in.
+
+    Phase 3 read methods return deterministic synthetic values (well-id
+    hash modulated) so workflow code can be exercised end-to-end in
+    ``dry_run`` without ever opening the USB endpoint.
     """
 
     def __init__(self) -> None:
@@ -256,6 +359,86 @@ class StubCytationReader:
         if not self._connected:
             raise RuntimeError("stub reader is not connected")
         self._drawer = "in"
+
+    # ------------------------------------------------------------------
+    # Phase 3 read methods -- deterministic synthetic outputs
+    # ------------------------------------------------------------------
+
+    async def read_absorbance(
+        self,
+        *,
+        wells: list[str],
+        wavelength_nm: float,
+    ) -> dict[str, float]:
+        self._require_connected()
+        return {w: _synth_optical(w, wavelength_nm, scale=2.0) for w in wells}
+
+    async def read_fluorescence(
+        self,
+        *,
+        wells: list[str],
+        excitation_nm: float,
+        emission_nm: float,
+        gain: float = 50.0,
+        focal_height_mm: float = 7.0,
+    ) -> dict[str, float]:
+        self._require_connected()
+        # gain / focal_height nudge the deterministic value enough that the
+        # tests can distinguish "same wells, different args".
+        bias = (gain / 50.0) * (focal_height_mm / 7.0)
+        return {
+            w: _synth_optical(w, excitation_nm + emission_nm, scale=10000.0) * bias
+            for w in wells
+        }
+
+    async def read_luminescence(
+        self,
+        *,
+        wells: list[str],
+        integration_time_s: float = 1.0,
+        gain: float = 50.0,
+    ) -> dict[str, float]:
+        self._require_connected()
+        bias = integration_time_s * (gain / 50.0)
+        return {w: _synth_optical(w, 0.0, scale=5000.0) * bias for w in wells}
+
+    async def capture_image(
+        self,
+        *,
+        well: str,
+        channel: str,
+        focal_height_mm: float = 5.0,
+        exposure_ms: float = 10.0,
+        gain: float = 1.0,
+    ) -> dict[str, Any]:
+        self._require_connected()
+        return {
+            "well": well,
+            "channel": channel,
+            "focal_height_mm": focal_height_mm,
+            "exposure_ms": exposure_ms,
+            "gain": gain,
+            "synthetic": True,
+            # Stub never writes a real image; the orchestrator gets a
+            # data: URI placeholder instead so end-to-end tests can run
+            # without touching the filesystem.
+            "image_data_uri": "data:image/png;base64,iVBORw0KGgo=",
+        }
+
+    def _require_connected(self) -> None:
+        if not self._connected:
+            raise RuntimeError("stub reader is not connected")
+
+
+def _synth_optical(well: str, wavelength_nm: float, *, scale: float) -> float:
+    """Deterministic synthetic optical reading.
+
+    Mixes the well-id and wavelength so the same (well, wavelength)
+    pair always returns the same value but different wells or
+    wavelengths produce different values. Range: roughly 0..scale.
+    """
+    h = abs(hash((well, round(wavelength_nm, 3))))
+    return round((h % 10_000) / 10_000.0 * scale, 4)
 
 
 def make_reader(*, dry_run: bool, usb_serial: str | None = None) -> Any:

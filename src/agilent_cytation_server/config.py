@@ -115,6 +115,7 @@ _DEFAULTS: dict[str, Any] = {
         "dry_run": False,
         "cors_origins": ["*"],
         "startup_connect_timeout_s": 30.0,
+        "enforce_claims": True,
     },
     "dashboard": {
         "equipment_id": "cytation_5",

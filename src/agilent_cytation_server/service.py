@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from . import config as _config
+from .claims import ClaimManager
 from .models import (
     PROTOCOL_VERSION,
     ComponentStatus,
@@ -69,6 +70,7 @@ class CytationService:
         dry_run: bool = False,
         reader_factory: Callable[[], Any] | None = None,
         plate_state: PlateStateStore | None = None,
+        claim_manager: ClaimManager | None = None,
     ) -> None:
         self.dry_run = dry_run
         self._reader_factory = reader_factory
@@ -101,6 +103,12 @@ class CytationService:
             state_path = _config.get("plates", "state_path", "./state.json")
             plate_state = PlateStateStore(state_path=state_path)
         self.plate_state = plate_state
+
+        # Phase 3: cooperative claim manager.
+        if claim_manager is None:
+            enforce_claims = bool(_config.get("service", "enforce_claims", True))
+            claim_manager = ClaimManager(enforce=enforce_claims)
+        self.claims = claim_manager
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -177,11 +185,11 @@ class CytationService:
                 host=host,
                 equipment_status="requires_init",
                 message=(
-                    "Driver not connected. POST /control/startup will "
-                    "graduate to v1.1; restart the service to retry."
+                    "Driver not connected. POST /control/startup to "
+                    "initialise the reader."
                 ),
                 required_actions=["startup"],
-                allowed_actions=[],
+                allowed_actions=self._allowed_actions("requires_init"),
                 device_time=now,
                 uptime_seconds=uptime,
                 components=self._disconnected_components(),
@@ -243,7 +251,7 @@ class CytationService:
             host=host,
             equipment_status=state,  # type: ignore[arg-type]
             message=message,
-            allowed_actions=[],  # populated when v1.1 ships
+            allowed_actions=self._allowed_actions(state),
             device_time=now,
             uptime_seconds=uptime,
             components=components,
@@ -300,6 +308,153 @@ class CytationService:
                 notes=notes,
                 clear_sample_id=clear_sample_id,
                 clear_notes=clear_notes,
+            )
+
+    # ------------------------------------------------------------------
+    # Phase 3 (v1.1): /control/* operations
+    #
+    # Each method assumes the API layer has already validated the
+    # X-Claim-Token; the service does NOT re-check it. Hardware errors
+    # are recorded via ``_record_error`` so they land on /status and
+    # the device falls into ``error`` for the recent-error window.
+    # ------------------------------------------------------------------
+
+    async def open_drawer(self) -> None:
+        async with self._lock:
+            self._require_connected()
+            self._busy_state = True
+            try:
+                await self._reader.open_drawer()
+                self._drawer = "out"
+            except Exception as exc:
+                self._record_error(exc, "drawer.open")
+                raise
+            finally:
+                self._busy_state = False
+
+    async def close_drawer(self) -> None:
+        async with self._lock:
+            self._require_connected()
+            self._busy_state = True
+            try:
+                await self._reader.close_drawer()
+                self._drawer = "in"
+            except Exception as exc:
+                self._record_error(exc, "drawer.close")
+                raise
+            finally:
+                self._busy_state = False
+
+    async def read_absorbance(
+        self,
+        *,
+        wells: list[str],
+        wavelength_nm: float,
+    ) -> dict[str, float]:
+        async with self._lock:
+            self._require_connected()
+            self._busy_state = True
+            try:
+                result = await self._reader.read_absorbance(
+                    wells=wells, wavelength_nm=wavelength_nm
+                )
+                self._read_count += 1
+                self._last_read_at = time.monotonic()
+                return result
+            except Exception as exc:
+                self._record_error(exc, "read.absorbance")
+                raise
+            finally:
+                self._busy_state = False
+
+    async def read_fluorescence(
+        self,
+        *,
+        wells: list[str],
+        excitation_nm: float,
+        emission_nm: float,
+        gain: float = 50.0,
+        focal_height_mm: float = 7.0,
+    ) -> dict[str, float]:
+        async with self._lock:
+            self._require_connected()
+            self._busy_state = True
+            try:
+                result = await self._reader.read_fluorescence(
+                    wells=wells,
+                    excitation_nm=excitation_nm,
+                    emission_nm=emission_nm,
+                    gain=gain,
+                    focal_height_mm=focal_height_mm,
+                )
+                self._read_count += 1
+                self._last_read_at = time.monotonic()
+                return result
+            except Exception as exc:
+                self._record_error(exc, "read.fluorescence")
+                raise
+            finally:
+                self._busy_state = False
+
+    async def read_luminescence(
+        self,
+        *,
+        wells: list[str],
+        integration_time_s: float = 1.0,
+        gain: float = 50.0,
+    ) -> dict[str, float]:
+        async with self._lock:
+            self._require_connected()
+            self._busy_state = True
+            try:
+                result = await self._reader.read_luminescence(
+                    wells=wells,
+                    integration_time_s=integration_time_s,
+                    gain=gain,
+                )
+                self._read_count += 1
+                self._last_read_at = time.monotonic()
+                return result
+            except Exception as exc:
+                self._record_error(exc, "read.luminescence")
+                raise
+            finally:
+                self._busy_state = False
+
+    async def capture_image(
+        self,
+        *,
+        well: str,
+        channel: str,
+        focal_height_mm: float = 5.0,
+        exposure_ms: float = 10.0,
+        gain: float = 1.0,
+    ) -> dict[str, Any]:
+        async with self._lock:
+            self._require_connected()
+            if not self.imaging_enabled:
+                raise RuntimeError(
+                    "Imaging is disabled in config.toml ([imaging].enabled=false)"
+                )
+            self._busy_state = True
+            try:
+                return await self._reader.capture_image(
+                    well=well,
+                    channel=channel,
+                    focal_height_mm=focal_height_mm,
+                    exposure_ms=exposure_ms,
+                    gain=gain,
+                )
+            except Exception as exc:
+                self._record_error(exc, "imaging.capture")
+                raise
+            finally:
+                self._busy_state = False
+
+    def _require_connected(self) -> None:
+        if self._reader is None or not self._reader.is_connected():
+            raise RuntimeError(
+                "Cytation reader not initialised. POST /control/startup first."
             )
 
     # ------------------------------------------------------------------
@@ -362,12 +517,47 @@ class CytationService:
         drawer_override: str | None = None,
     ) -> dict[str, Any]:
         plate = self.plate_state.get()
+        holder = self.claims.current()
         return {
             "drawer": drawer_override if drawer_override is not None else self._drawer,
             "backend": str(_config.get("instrument", "backend", "cytation5")),
             "imaging_enabled": self.imaging_enabled,
             "loaded_plate": plate.model_dump(mode="json") if plate else None,
+            "claimed_by": holder.model_dump(mode="json") if holder else None,
+            "claims_enforced": self.claims.enforce,
         }
+
+    def _allowed_actions(self, state: str) -> list[str]:
+        """Return the skills this device will currently honor on /control/*.
+
+        Mirrors the skill names declared in
+        ``ac-organic-lab/skills/.../skill_catalog/plate_reader.py``
+        (Phase 4 -- see docs/phase4_handoff.md). Always advertises
+        claim verbs so an SDK can negotiate exclusive control before
+        attempting any state-bound action.
+        """
+        always = ["claim", "heartbeat", "release"]
+        if state == "requires_init":
+            return [*always, "startup"]
+        if state == "dry_run" or state == "ready":
+            return [
+                *always,
+                "shutdown",
+                "drawer.open",
+                "drawer.close",
+                "plate.load",
+                "plate.unload",
+                "well.update",
+                "read.absorbance",
+                "read.fluorescence",
+                "read.luminescence",
+                *(["imaging.capture"] if self.imaging_enabled else []),
+            ]
+        if state == "busy":
+            return [*always]
+        if state in ("error", "degraded"):
+            return [*always, "shutdown"]
+        return list(always)
 
     def _record_error(self, exc: Exception, code: str) -> None:
         self._last_error = ErrorInfo(

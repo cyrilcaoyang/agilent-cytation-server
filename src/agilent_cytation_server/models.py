@@ -1,4 +1,4 @@
-"""Lab equipment status spec v1.0.
+"""Lab equipment status spec v1.1.
 
 Verbatim copy of the unified status contract defined in the
 ac-organic-lab monorepo (``docs/STATUS_SPEC.md``). MUST stay in sync
@@ -10,9 +10,12 @@ package is published; once it is, replace this file with::
     )
 
 Conformance: agilent-cytation-server REST API conforms to lab status
-spec v1.0 (read-only). Phase 2 adds per-well sample tracking surfaced
-under ``details.loaded_plate``. ``/control/*`` writes + claim
-protocol graduate to v1.1 in Phase 3.
+spec v1.1 — cooperative claims (``POST /control/{claim,heartbeat,
+release}``) plus ``/control/*`` writes for drawer, reads, plate
+load/unload, and imaging capture. ``allowed_actions`` is populated
+from the current state machine; ``details.claimed_by`` is populated
+while a claim is held. v1.0 is a subset and remains valid for
+read-only consumers.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-PROTOCOL_VERSION = "1.0"
+PROTOCOL_VERSION = "1.1"
 
 
 EquipmentKind = Literal[
@@ -162,6 +165,42 @@ class LoadedPlate(BaseModel):
     wells: list[WellSample] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# Phase 3 (v1.1): cooperative claim protocol
+#
+# Cooperative, not authenticated. Any client could ignore the protocol;
+# this server enforces it by checking X-Claim-Token on /control/* and
+# rejecting mismatches with HTTP 423 Locked.
+# ---------------------------------------------------------------------------
+
+
+class ClaimedBy(BaseModel):
+    """Identity of the current claim holder. Surfaced on /status under
+    ``details.claimed_by`` so every reader sees who controls the device."""
+
+    session_id: str
+    owner: str
+    expires_at: datetime
+
+
+class ClaimRequest(BaseModel):
+    owner: str = Field(..., min_length=1, max_length=128)
+    session_id: str = Field(..., min_length=1, max_length=128)
+    ttl_s: float = Field(default=30.0, ge=1.0, le=600.0)
+
+
+class ClaimResponse(BaseModel):
+    claim_token: str
+    heartbeat_interval_s: float
+    expires_at: datetime
+
+
+class ClaimRejection(BaseModel):
+    detail: str
+    claimed_by: ClaimedBy | None = None
+    retry_after_s: float | None = None
+
+
 __all__ = [
     "PROTOCOL_VERSION",
     "EquipmentKind",
@@ -176,4 +215,8 @@ __all__ = [
     "WellId",
     "WellSample",
     "LoadedPlate",
+    "ClaimedBy",
+    "ClaimRequest",
+    "ClaimResponse",
+    "ClaimRejection",
 ]

@@ -4,10 +4,9 @@
 #
 # config.toml is gitignored — your local settings stay on the lab PC.
 #
-# Conformance: this service implements lab status spec v1.0 (read-only).
-# Claim/heartbeat/release and /control/* writes graduate to v1.1 in a
-# follow-up release. See the ac-organic-lab monorepo's
-# docs/STATUS_SPEC.md and docs/STATUS_SPEC_v1_1.md for the contract.
+# Conformance: this service implements lab status spec v1.1 -- cooperative
+# claims plus the full /control/* write surface. See the ac-organic-lab
+# monorepo's docs/STATUS_SPEC.md for the contract.
 
 [instrument]
 # PyLabRobot backend. "cytation5" creates a real CytationBackend at
@@ -69,6 +68,11 @@ port = 9333
 dry_run = false                 # true = stub driver (CI / dev / non-Windows)
 cors_origins = ["*"]            # Tailnet ACLs gate access, so * is fine
 startup_connect_timeout_s = 30.0  # PLR Cytation setup is slow (~10-30s)
+# v1.1 cooperative claims. true (default) makes /control/* require
+# X-Claim-Token (HTTP 423 otherwise). false leaves them advisory --
+# details.claimed_by still surfaces the holder, but commands aren't
+# gated. Workflows should always claim regardless.
+enforce_claims = true
 
 # ── Dashboard identity ──────────────────────────────────────────────
 # Reported in GET /status. Must match the entry in the dashboard's

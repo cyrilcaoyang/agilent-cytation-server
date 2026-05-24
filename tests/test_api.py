@@ -34,7 +34,7 @@ def test_probe(client: TestClient) -> None:
     assert body["equipment_id"] == "cytation_5"
     assert body["equipment_name"] == "BioTek Cytation 5"
     assert body["protocol_version"] == PROTOCOL_VERSION
-    assert body["protocol_version"] == "1.0"
+    assert body["protocol_version"] == "1.1"
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +89,9 @@ def test_status_envelope(client: TestClient) -> None:
     assert isinstance(body["device_time"], str)
     assert isinstance(body["uptime_seconds"], (int, float))
     assert isinstance(body["allowed_actions"], list)
-    assert body["allowed_actions"] == []  # v1.0 — no /control/* yet
+    # v1.1: claim verbs are always advertised; the rest depend on state.
+    for verb in ["claim", "heartbeat", "release"]:
+        assert verb in body["allowed_actions"]
 
     # Components: optics / incubator / plate_stage always; imaging when enabled.
     components = body["components"]

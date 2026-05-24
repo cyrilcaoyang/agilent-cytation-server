@@ -1,5 +1,19 @@
 {
-  "allowed_actions": [],
+  "allowed_actions": [
+    "claim",
+    "heartbeat",
+    "release",
+    "shutdown",
+    "drawer.open",
+    "drawer.close",
+    "plate.load",
+    "plate.unload",
+    "well.update",
+    "read.absorbance",
+    "read.fluorescence",
+    "read.luminescence",
+    "imaging.capture"
+  ],
   "components": {
     "imaging": {
       "connected": true,
@@ -28,6 +42,8 @@
   },
   "details": {
     "backend": "cytation5",
+    "claimed_by": null,
+    "claims_enforced": true,
     "drawer": "in",
     "imaging_enabled": true,
     "loaded_plate": null
@@ -53,7 +69,7 @@
       "value": 0
     }
   },
-  "protocol_version": "1.0",
+  "protocol_version": "1.1",
   "required_actions": [],
   "uptime_seconds": 0.0
 }
