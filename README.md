@@ -9,7 +9,7 @@ PyLabRobot-backed Python driver and REST API service for the **BioTek (Agilent) 
 | Phase | Output | Status |
 |---|---|---|
 | **0+1** | STATUS_SPEC v1.0 read-only API on the Cytation PC; `equipment.yaml` flips from `mock` to `http`. | ✅ shipped |
-| **2** | Per-well sample tracking via persistent `PlateStateStore`; surfaced under `details.loaded_plate`. | ✅ shipped |
+| **2** | Per-well sample tracking via persistent `PlateStateStore`; surfaced under `details.loaded_plate`. See [`docs/PLATE_STATE.md`](docs/PLATE_STATE.md) for the cross-device strategy. | ✅ shipped |
 | **3** | STATUS_SPEC v1.1: `POST /control/claim`, `/heartbeat`, `/release`, `allowed_actions`, full `/control/*` write surface (drawer, reads, plate load/unload, imaging capture). | ✅ shipped — dry-run tested, hardware verification pending |
 | **4** | `lab_skills/skill_catalog/plate_reader.py` registered in the monorepo so workflows can `await session.role("plate_reader").read_absorbance(...)`. | draft in `docs/phase4_handoff.md`; needs to be applied on the central server |
 
