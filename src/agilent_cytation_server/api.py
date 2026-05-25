@@ -457,8 +457,7 @@ def create_app(
             },
         )
 
-    # Expose the service for tests / debugging — same pattern as
-    # agilent_plateloc/src/agilent_plateloc/api.py.
+    # Expose the service for tests / debugging — standard FastAPI pattern.
     app.state.service = service
     return app
 

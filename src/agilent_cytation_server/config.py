@@ -1,8 +1,8 @@
 """Configuration loader for the Cytation 5 service.
 
 Reads ``config.toml`` from the project root (next to ``pyproject.toml``)
-and exposes the values via :func:`get`. Mirrors the loader pattern used
-by ``agilent_plateloc.config`` so deployments on the same lab PC behave
+and exposes the values via :func:`get`. Uses the standard STATUS_SPEC
+device-PC config-loader pattern so deployments on the same lab PC behave
 identically.
 
 If ``config.toml`` is missing the loader falls back to the built-in

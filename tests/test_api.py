@@ -2,10 +2,8 @@
 
 These tests run with the dry-run stub reader so they require no Windows
 / PyLabRobot / pyusb dependencies and can be executed in CI on any
-platform. The reference patterns are
-``agilent_plateloc/tests/test_api.py`` (v1.1) and
-``xarm-translocation/test/test_status_envelope.py`` (v1.0); this file
-follows the v1.0 read-only shape because Phase 1 ships no /control/*.
+platform. This file follows the STATUS_SPEC v1.0 read-only shape because
+Phase 1 ships no /control/*.
 """
 
 from __future__ import annotations

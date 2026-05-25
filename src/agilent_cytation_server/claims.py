@@ -65,8 +65,7 @@ class ClaimManager:
     """In-memory single-holder TTL claim store."""
 
     # 1/3 of TTL by default — gives the SDK ~2 missed-heartbeat budget
-    # before expiry. Mirrors the agilent_plateloc / filter_every_well
-    # convention.
+    # before expiry. Standard SDK heartbeat budget per STATUS_SPEC v1.1 §5.
     _HEARTBEAT_DIVISOR = 3.0
 
     def __init__(self, *, enforce: bool = True) -> None:

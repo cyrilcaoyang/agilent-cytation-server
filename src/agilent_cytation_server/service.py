@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 # Window during which a recent error keeps the device in `error` state.
 # After this, if no further failures land, the device falls back to
-# `ready` / `degraded` (matches the convention used by agilent_plateloc).
+# `ready` / `degraded` per STATUS_SPEC v1.1 state machine.
 _RECENT_ERROR_WINDOW_S = 60.0
 
 
