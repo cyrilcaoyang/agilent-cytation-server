@@ -43,3 +43,6 @@ htmlcov/
 # Local smoke / NSSM logs
 .smoke.*.log
 *.nssm.log
+
+# Claude Code local config
+.claude/
