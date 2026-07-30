@@ -184,6 +184,8 @@ class CytationService:
                 equipment_version=self.equipment_version,
                 host=host,
                 equipment_status="requires_init",
+                activity="unknown",
+                activity_since=None,
                 message=(
                     "Driver not connected. POST /control/startup to "
                     "initialise the reader."
@@ -250,6 +252,8 @@ class CytationService:
             equipment_version=self.equipment_version,
             host=host,
             equipment_status=state,  # type: ignore[arg-type]
+            activity=("running" if state == "busy" else "idle") if state in ("ready", "busy") else "unknown",
+            activity_since=now if state in ("ready", "busy") else None,
             message=message,
             allowed_actions=self._allowed_actions(state),
             device_time=now,

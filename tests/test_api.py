@@ -32,7 +32,7 @@ def test_probe(client: TestClient) -> None:
     assert body["equipment_id"] == "cytation_5"
     assert body["equipment_name"] == "BioTek Cytation 5"
     assert body["protocol_version"] == PROTOCOL_VERSION
-    assert body["protocol_version"] == "1.1"
+    assert body["protocol_version"] == "1.2"
 
 
 # ---------------------------------------------------------------------------

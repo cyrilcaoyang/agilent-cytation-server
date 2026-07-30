@@ -1,4 +1,6 @@
 {
+  "activity": "unknown",
+  "activity_since": null,
   "allowed_actions": [
     "claim",
     "heartbeat",
@@ -49,7 +51,7 @@
   "last_error": null,
   "message": "Driver not connected. POST /control/startup to initialise the reader.",
   "metrics": {},
-  "protocol_version": "1.1",
+  "protocol_version": "1.2",
   "required_actions": [
     "startup"
   ],

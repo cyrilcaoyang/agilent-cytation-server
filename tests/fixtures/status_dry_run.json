@@ -1,4 +1,6 @@
 {
+  "activity": "unknown",
+  "activity_since": null,
   "allowed_actions": [
     "claim",
     "heartbeat",
@@ -70,7 +72,7 @@
       "value": 0
     }
   },
-  "protocol_version": "1.1",
+  "protocol_version": "1.2",
   "required_actions": [],
   "uptime_seconds": 0.0
 }

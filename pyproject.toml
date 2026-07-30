@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agilent-cytation-server"
 version = "0.1.0"
-description = "PyLabRobot-backed driver and STATUS_SPEC REST API for the BioTek (Agilent) Cytation 5 plate reader (lab status spec v1.0)"
+description = "PyLabRobot-backed driver and STATUS_SPEC REST API for the BioTek (Agilent) Cytation 5 plate reader (lab status spec v1.2)"
 readme = "README.md"
 authors = [
     { name = "Yang Cao", email = "cyrilcaoyang@gmail.com" },
@@ -21,7 +21,11 @@ keywords = ["pylabrobot", "cytation", "biotek", "agilent", "plate-reader", "lab-
 # in-memory stub driver only and never import pylabrobot.
 dependencies = [
     "tomli>=2.0; python_version < '3.11'",
+    "sdl-lab-contract",
 ]
+
+[tool.uv.sources]
+sdl-lab-contract = { git = "https://github.com/AccelerationConsortium/sdl-lab-contract", tag = "v1.2.0" }
 
 [project.optional-dependencies]
 api = [

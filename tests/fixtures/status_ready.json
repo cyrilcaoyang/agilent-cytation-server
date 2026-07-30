@@ -1,4 +1,6 @@
 {
+  "activity": "idle",
+  "activity_since": "2026-07-30T05:26:16.889545Z",
   "allowed_actions": [
     "claim",
     "heartbeat",
@@ -69,7 +71,7 @@
       "value": 0
     }
   },
-  "protocol_version": "1.1",
+  "protocol_version": "1.2",
   "required_actions": [],
   "uptime_seconds": 0.0
 }
