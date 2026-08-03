@@ -30,6 +30,7 @@ import asyncio
 import logging
 import socket
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -55,13 +56,30 @@ logger = logging.getLogger(__name__)
 # `ready` / `degraded` per STATUS_SPEC v1.1 state machine.
 _RECENT_ERROR_WINDOW_S = 60.0
 
+# How long a cached instrument readback (temperature) stays fresh. `/status`
+# serves the cache rather than reading the instrument on the request path.
+_READBACK_TTL_S = 3.0
+
+# Hard bound on how long `/status` will wait for the reader lock in order to
+# refresh that cache. A poll must NEVER queue behind an operation: a plate read
+# holds the lock for seconds to minutes, so a blocking poll would return only
+# after the read finished — with `_busy_state` already back to False. That made
+# `busy` (and therefore v1.2 `activity: "running"`) unobservable from outside,
+# which is the whole point of the field. On timeout we serve the stale cache.
+_READBACK_LOCK_WAIT_S = 0.05
+
 
 class CytationService:
     """Wraps a :class:`CytationReader` (or :class:`StubCytationReader`)
     and produces spec-compliant :class:`EquipmentStatus` snapshots.
 
-    Concurrency: all driver I/O happens inside ``self._lock``. Status
-    reads share the same lock so a poll cannot interleave with a write.
+    Concurrency: all driver I/O happens inside ``self._lock``. ``get_status``
+    deliberately does **not** take that lock — it composes the envelope from
+    in-memory state plus a short-TTL readback cache, and will wait no longer
+    than :data:`_READBACK_LOCK_WAIT_S` to refresh that cache. A status poll
+    that blocks for the duration of a plate read cannot observe the read
+    happening, which is exactly what ``activity`` (STATUS_SPEC v1.2 §2.3)
+    exists to report.
     """
 
     def __init__(
@@ -82,6 +100,22 @@ class CytationService:
         self._drawer: str = "unknown"
         self._last_read_at: float | None = None  # time.monotonic()
         self._read_count: int = 0
+        # Reserved monotonic counter (§2.3.1). Reads and captures routinely
+        # finish between two 60 s dashboard polls, so a sampled `activity`
+        # series does not undercount them — it misses them entirely. The
+        # poll-to-poll delta of this counter is the accountable number.
+        self._cycles_total: int = 0
+        # Activity span tracking (§2.3). `_activity` is the last observed
+        # value; `_activity_since` is the instant it last changed — the start
+        # of the CURRENT span, never the poll instant. Operations stamp both
+        # edges; `get_status` only reconciles.
+        self._activity: str = "idle"
+        self._activity_since: datetime | None = datetime.now(timezone.utc)
+        # Cached instrument readback, served by `/status` so a poll never
+        # issues hardware I/O on the request path. See `_refresh_readings`.
+        self._readings: dict[str, Any] = {}
+        self._readback_errors: list[str] = []
+        self._readings_at: float | None = None  # time.monotonic()
 
         # Identity (configurable so a deployment can override).
         self.equipment_id: str = _config.get("dashboard", "equipment_id", "cytation_5")
@@ -152,6 +186,13 @@ class CytationService:
                 self._reader = None
                 self._busy_state = False
                 self._drawer = "unknown"
+                # The cached readback describes a reader we no longer hold;
+                # keeping it would let /status report a temperature for a
+                # disconnected instrument.
+                self._readings = {}
+                self._readback_errors = []
+                self._readings_at = None
+                self._note_activity(self._observed_activity())
 
     # ------------------------------------------------------------------
     # Status (side-effect-free)
@@ -164,15 +205,51 @@ class CytationService:
         seconds and to always return HTTP 200 unless the process itself
         is broken. Per-getter failures fold into ``degraded`` rather
         than raise.
+
+        Does not hold the reader lock while composing the envelope: see the
+        class docstring for why a poll must stay answerable mid-operation.
         """
 
-        async with self._lock:
-            return await self._build_status_locked()
+        await self._refresh_readings()
+        return self._build_status()
 
-    async def _build_status_locked(self) -> EquipmentStatus:
+    async def _refresh_readings(self) -> None:
+        """Best-effort refresh of the cached instrument readback.
+
+        Skipped entirely while an operation owns the reader, and bounded by
+        :data:`_READBACK_LOCK_WAIT_S` otherwise, so the caller is never made
+        to wait on hardware. A stale cache is strictly better than a poll that
+        cannot answer — and ``_readings_at`` records how stale.
+        """
+
+        if self._reader is None or not self._reader.is_connected():
+            return
+        fresh_until = (self._readings_at or 0.0) + _READBACK_TTL_S
+        if self._readings_at is not None and time.monotonic() < fresh_until:
+            return
+        if self._lock.locked():
+            return
+        try:
+            await asyncio.wait_for(self._lock.acquire(), _READBACK_LOCK_WAIT_S)
+        except (asyncio.TimeoutError, TimeoutError):
+            return
+        try:
+            errors: list[str] = []
+            self._readings["actual_temperature"] = await self._safe_read(
+                "actual_temperature", self._reader.get_temperature, errors
+            )
+            self._readback_errors = errors
+            self._readings_at = time.monotonic()
+        finally:
+            self._lock.release()
+
+    def _build_status(self) -> EquipmentStatus:
         now = datetime.now(timezone.utc)
         uptime = time.monotonic() - self._started_at
         host = _safe_hostname()
+        # Health (§2.2) and activity (§2.3) are answered independently. This
+        # only reconciles the span for transitions no operation edge stamped.
+        activity = self._sync_activity()
 
         # ---- not connected: requires_init ------------------------------
         if self._reader is None or not self._reader.is_connected():
@@ -184,14 +261,18 @@ class CytationService:
                 equipment_version=self.equipment_version,
                 host=host,
                 equipment_status="requires_init",
-                activity="unknown",
-                activity_since=None,
+                # §2.3's invariant table: requires_init ⇒ idle. Reporting
+                # `unknown` here was a contract violation — with no session
+                # open, "not performing its primary operation" is not merely
+                # the honest answer, it is a certainty.
+                activity=activity,
+                activity_since=self._activity_since,
                 message=(
                     "Driver not connected. POST /control/startup to "
                     "initialise the reader."
                 ),
                 required_actions=["startup"],
-                allowed_actions=self._allowed_actions("requires_init"),
+                allowed_actions=self._allowed_actions("requires_init", activity),
                 device_time=now,
                 uptime_seconds=uptime,
                 components=self._disconnected_components(),
@@ -201,14 +282,14 @@ class CytationService:
                 last_error=self._last_error,
             )
 
-        # ---- read what we can; never let a single getter fail status -----
+        # ---- serve the cached readback; never read hardware from here ----
         metrics: dict[str, MetricValue] = {}
         details: dict[str, Any] = self._base_details()
-        readback_errors: list[str] = []
+        readback_errors: list[str] = list(self._readback_errors)
 
-        actual_temp = await self._safe_read(
-            "actual_temperature", self._reader.get_temperature, readback_errors
-        )
+        actual_temp = self._readings.get("actual_temperature")
+        if self._readings_at is not None:
+            details["readback_age_s"] = round(time.monotonic() - self._readings_at, 3)
         if actual_temp is not None:
             metrics["actual_temperature"] = MetricValue(
                 value=float(actual_temp), unit="C", timestamp=now
@@ -219,7 +300,13 @@ class CytationService:
                 value=round(time.monotonic() - self._last_read_at, 3),
                 unit="s",
             )
+        # `read_count` is this repo's original, measurement-only counter and
+        # stays for existing readers; `cycles_total` is the spec's reserved
+        # key (§2.3.1) and additionally counts image captures, matching what
+        # `activity` calls the primary operation. Same pattern as plateloc
+        # publishing its odometer under both names.
         metrics["read_count"] = MetricValue(value=int(self._read_count), unit="count")
+        metrics["cycles_total"] = MetricValue(value=int(self._cycles_total), unit="count")
 
         # ---- top-level equipment_status --------------------------------
         if self.dry_run:
@@ -252,10 +339,10 @@ class CytationService:
             equipment_version=self.equipment_version,
             host=host,
             equipment_status=state,  # type: ignore[arg-type]
-            activity=("running" if state == "busy" else "idle") if state in ("ready", "busy") else "unknown",
-            activity_since=now if state in ("ready", "busy") else None,
+            activity=activity,  # type: ignore[arg-type]
+            activity_since=self._activity_since,
             message=message,
-            allowed_actions=self._allowed_actions(state),
+            allowed_actions=self._allowed_actions(state, activity),
             device_time=now,
             uptime_seconds=uptime,
             components=components,
@@ -326,28 +413,16 @@ class CytationService:
     async def open_drawer(self) -> None:
         async with self._lock:
             self._require_connected()
-            self._busy_state = True
-            try:
+            async with self._operation("drawer.open"):
                 await self._reader.open_drawer()
                 self._drawer = "out"
-            except Exception as exc:
-                self._record_error(exc, "drawer.open")
-                raise
-            finally:
-                self._busy_state = False
 
     async def close_drawer(self) -> None:
         async with self._lock:
             self._require_connected()
-            self._busy_state = True
-            try:
+            async with self._operation("drawer.close"):
                 await self._reader.close_drawer()
                 self._drawer = "in"
-            except Exception as exc:
-                self._record_error(exc, "drawer.close")
-                raise
-            finally:
-                self._busy_state = False
 
     async def read_absorbance(
         self,
@@ -357,19 +432,13 @@ class CytationService:
     ) -> dict[str, float]:
         async with self._lock:
             self._require_connected()
-            self._busy_state = True
-            try:
+            async with self._operation("read.absorbance", counts_as_cycle=True):
                 result = await self._reader.read_absorbance(
                     wells=wells, wavelength_nm=wavelength_nm
                 )
                 self._read_count += 1
                 self._last_read_at = time.monotonic()
                 return result
-            except Exception as exc:
-                self._record_error(exc, "read.absorbance")
-                raise
-            finally:
-                self._busy_state = False
 
     async def read_fluorescence(
         self,
@@ -382,8 +451,7 @@ class CytationService:
     ) -> dict[str, float]:
         async with self._lock:
             self._require_connected()
-            self._busy_state = True
-            try:
+            async with self._operation("read.fluorescence", counts_as_cycle=True):
                 result = await self._reader.read_fluorescence(
                     wells=wells,
                     excitation_nm=excitation_nm,
@@ -394,11 +462,6 @@ class CytationService:
                 self._read_count += 1
                 self._last_read_at = time.monotonic()
                 return result
-            except Exception as exc:
-                self._record_error(exc, "read.fluorescence")
-                raise
-            finally:
-                self._busy_state = False
 
     async def read_luminescence(
         self,
@@ -409,8 +472,7 @@ class CytationService:
     ) -> dict[str, float]:
         async with self._lock:
             self._require_connected()
-            self._busy_state = True
-            try:
+            async with self._operation("read.luminescence", counts_as_cycle=True):
                 result = await self._reader.read_luminescence(
                     wells=wells,
                     integration_time_s=integration_time_s,
@@ -419,11 +481,6 @@ class CytationService:
                 self._read_count += 1
                 self._last_read_at = time.monotonic()
                 return result
-            except Exception as exc:
-                self._record_error(exc, "read.luminescence")
-                raise
-            finally:
-                self._busy_state = False
 
     async def capture_image(
         self,
@@ -440,8 +497,7 @@ class CytationService:
                 raise RuntimeError(
                     "Imaging is disabled in config.toml ([imaging].enabled=false)"
                 )
-            self._busy_state = True
-            try:
+            async with self._operation("imaging.capture", counts_as_cycle=True):
                 return await self._reader.capture_image(
                     well=well,
                     channel=channel,
@@ -449,11 +505,63 @@ class CytationService:
                     exposure_ms=exposure_ms,
                     gain=gain,
                 )
-            except Exception as exc:
-                self._record_error(exc, "imaging.capture")
-                raise
-            finally:
-                self._busy_state = False
+
+    # ------------------------------------------------------------------
+    # Activity (STATUS_SPEC v1.2 §2.3)
+    # ------------------------------------------------------------------
+
+    def _observed_activity(self) -> str:
+        """Is the instrument executing a commanded operation right now?
+
+        Observed from ``_busy_state``, which every operation sets around its
+        own call into the reader — never computed from ``equipment_status``,
+        which §2.3 forbids because it would add no information.
+
+        "Primary operation" for this plate reader is a **measurement**
+        (absorbance / fluorescence / luminescence) or an **image capture**.
+        A drawer move also reports ``running``: the instrument is executing a
+        commanded operation and cannot start a read until it finishes. Drawer
+        moves are not counted in ``cycles_total`` — see the README table.
+        """
+
+        return "running" if self._busy_state else "idle"
+
+    def _note_activity(self, activity: str) -> None:
+        """Record an observed activity, stamping ``activity_since`` only when
+        the value changes (§2.3: the start of the CURRENT span, not of the
+        enclosing request — the previous implementation stamped every poll,
+        which made every span look zero-length)."""
+
+        if activity != self._activity:
+            self._activity = activity
+            self._activity_since = datetime.now(timezone.utc)
+
+    def _sync_activity(self) -> str:
+        self._note_activity(self._observed_activity())
+        return self._activity
+
+    @asynccontextmanager
+    async def _operation(self, code: str, *, counts_as_cycle: bool = False):
+        """Bracket one instrument operation: activity span, error capture,
+        and the reserved cycle counter.
+
+        The caller must already hold ``self._lock``. Stamping the span here
+        (rather than letting the next poll notice) is what gives
+        ``activity_since`` the true start of an in-flight read.
+        """
+
+        self._busy_state = True
+        self._note_activity("running")
+        try:
+            yield
+            if counts_as_cycle:
+                self._cycles_total += 1
+        except Exception as exc:
+            self._record_error(exc, code)
+            raise
+        finally:
+            self._busy_state = False
+            self._note_activity(self._observed_activity())
 
     def _require_connected(self) -> None:
         if self._reader is None or not self._reader.is_connected():
@@ -531,7 +639,7 @@ class CytationService:
             "claims_enforced": self.claims.enforce,
         }
 
-    def _allowed_actions(self, state: str) -> list[str]:
+    def _allowed_actions(self, state: str, activity: str = "idle") -> list[str]:
         """Return the skills this device will currently honor on /control/*.
 
         Mirrors the skill names declared in
@@ -539,8 +647,16 @@ class CytationService:
         (Phase 4 -- see docs/phase4_handoff.md). Always advertises
         claim verbs so an SDK can negotiate exclusive control before
         attempting any state-bound action.
+
+        Gated on ``activity`` as well as on ``state`` (§2.3): while an
+        operation is in flight, nothing that would start a second one is
+        advertised. The two gates agree by construction today — ``busy`` is
+        computed from the same ``_busy_state`` — but keying on activity is
+        what the spec requires and what a future state can't quietly break.
         """
         always = ["claim", "heartbeat", "release"]
+        if activity == "running":
+            return [*always]
         if state == "requires_init":
             return [*always, "startup"]
         if state == "dry_run" or state == "ready":

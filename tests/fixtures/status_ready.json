@@ -1,6 +1,6 @@
 {
   "activity": "idle",
-  "activity_since": "2026-07-30T05:26:16.889545Z",
+  "activity_since": "2026-08-03T03:20:23.454814Z",
   "allowed_actions": [
     "claim",
     "heartbeat",
@@ -48,7 +48,8 @@
     "claims_enforced": true,
     "drawer": "in",
     "imaging_enabled": true,
-    "loaded_plate": null
+    "loaded_plate": null,
+    "readback_age_s": 0.0
   },
   "device_time": "2026-04-29T22:50:01Z",
   "equipment_id": "cytation_5",
@@ -64,6 +65,11 @@
       "timestamp": "2026-04-29T22:50:01Z",
       "unit": "C",
       "value": 37.0
+    },
+    "cycles_total": {
+      "timestamp": null,
+      "unit": "count",
+      "value": 0
     },
     "read_count": {
       "timestamp": null,

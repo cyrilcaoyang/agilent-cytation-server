@@ -2,7 +2,28 @@
 
 PyLabRobot-backed Python driver and REST API service for the **BioTek (Agilent) Cytation 5 Multi-Mode Reader**, communicating over USB. Driver layer is `pylabrobot.plate_reading.PlateReader` + `pylabrobot.plate_reading.biotek.Cytation5Backend`. The service exposes the unified lab equipment status spec so the AC Organic Self-Driving Lab dashboard can poll it like any other device.
 
-> **API conformance:** This repo conforms to **lab status spec v1.1** — see `docs/STATUS_SPEC.md` in the [`ac-organic-lab`](https://github.com/cyrilcaoyang/ac-organic-lab) monorepo. The full `/control/*` write surface is wired (drawer, reads, plate load/unload, imaging capture, claim/heartbeat/release). Hardware verification against the real Cytation 5 is still pending — see `RUNBOOK.md` §3-§4 before flipping `protocol: "1.1"` in the dashboard's `equipment.yaml`.
+> **API conformance:** This repo conforms to **lab status spec v1.2** — see `docs/STATUS_SPEC.md` in the [`ac-organic-lab`](https://github.com/cyrilcaoyang/ac-organic-lab) monorepo. The wire types come from the shared `sdl-lab-contract` package. The full `/control/*` write surface is wired (drawer, reads, plate load/unload, imaging capture, claim/heartbeat/release), and `/status` reports v1.2 `activity` observed from the instrument — see [Activity and utilization](#activity-and-utilization-v12). Hardware verification against the real Cytation 5 is still pending — see `RUNBOOK.md` §3-§4.
+
+### Activity and utilization (v1.2)
+
+`equipment_status` answers *is this reader healthy and fit to run*; `activity` answers *is it working right now*. They are independent, and each is derived from its own observation — `activity` comes from the in-flight-operation flag the control methods set, never from `equipment_status` (which §2.3 forbids, since it would add no information).
+
+**Primary operation** is a **measurement** (absorbance / fluorescence / luminescence) or an **image capture**. A drawer move also reports `activity: "running"` — the instrument is executing a commanded operation and cannot start a read until it finishes — but is *not* counted in `cycles_total`, which counts measurements and captures only.
+
+| Situation | `equipment_status` | `activity` | `cycles_total` |
+|---|---|---|---|
+| Driver not connected | `requires_init` | `idle` | — |
+| Idle, connected | `ready` | `idle` | unchanged |
+| Measurement or capture in flight | `busy` | `running` | +1 on success |
+| Drawer moving | `busy` | `running` | unchanged |
+| Readback failing (e.g. temperature sensor) | `degraded` | observed (`idle` or `running`) | unchanged |
+| Error inside the recent-error window | `error` | observed | unchanged |
+
+`metrics["cycles_total"]` is the spec's reserved counter (§2.3.1). It matters because a read finishes well inside the dashboard's 60 s poll: a sampled `activity` series does not undercount those reads, it misses them entirely. The poll-to-poll delta of this counter is the accountable number. It resets on service restart, by contract. The repo's original `read_count` metric is kept alongside it and stays measurement-only.
+
+`activity_since` is the instant the current span began, so a reader can recover an in-progress read's true elapsed time. While `activity == "running"`, `allowed_actions` advertises only the claim verbs — nothing that would start a second concurrent operation.
+
+**Why `/status` does not take the reader lock.** Every operation holds an `asyncio.Lock` for its full duration. When `/status` shared that lock, a poll issued during a read returned only *after* the read completed, with the busy flag already cleared — so `busy` and `activity: "running"` were unobservable from outside, defeating the point of the field. `/status` now composes its envelope from in-memory state plus a short-TTL readback cache, and will wait at most 50 ms for the lock to refresh that cache. `details.readback_age_s` reports how stale the cached instrument reading is.
 
 ## Roadmap
 
@@ -12,6 +33,7 @@ PyLabRobot-backed Python driver and REST API service for the **BioTek (Agilent) 
 | **2** | Per-well sample tracking via persistent `PlateStateStore`; surfaced under `details.loaded_plate`. See [`docs/PLATE_STATE.md`](docs/PLATE_STATE.md) for the cross-device strategy. | ✅ shipped |
 | **3** | STATUS_SPEC v1.1: `POST /control/claim`, `/heartbeat`, `/release`, `allowed_actions`, full `/control/*` write surface (drawer, reads, plate load/unload, imaging capture). | ✅ shipped — dry-run tested, hardware verification pending |
 | **4** | `lab_skills/skill_catalog/plate_reader.py` registered in the monorepo so workflows can `await session.role("plate_reader").read_absorbance(...)`. | draft in `docs/phase4_handoff.md`; needs to be applied on the central server |
+| **5** | STATUS_SPEC v1.2: `sdl-lab-contract` types, `activity` / `activity_since` observed from the instrument, reserved `cycles_total`, and a `/status` path that stays answerable mid-operation. | ✅ shipped |
 
 ## Prerequisites
 
@@ -127,7 +149,7 @@ curl http://sdl2-pc-03-cytation:9333/status | jq
 - `GET /status` always returns **HTTP 200** when the process is alive. Hardware-not-yet-initialised is reported as `equipment_status: requires_init` with `required_actions: ["startup"]` (the eventual `POST /control/startup` lands in v1.1).
 - `equipment_id` matches the `id` in the dashboard's `equipment.yaml` (`cytation_5`). Do not change it without coordinating with the dashboard repo.
 - No `equipment_ip` / `equipment_tailscale` self-discovery — the dashboard registry is the single source of truth for "where to reach this device".
-- `models.py` is a verbatim copy of the spec from `ac-organic-lab/docs/STATUS_SPEC.md` and will eventually be replaced by `from lab_status_contract import ...`.
+- `models.py` no longer vendors the contract: the wire types are imported from the shared [`sdl-lab-contract`](https://github.com/AccelerationConsortium/sdl-lab-contract) package (pinned to the tag whose major.minor matches the spec revision) and re-exported, so every `from .models import ...` in this repo keeps working.
 
 Reference snapshots live in `tests/fixtures/status_*.json` covering `requires_init`, `ready`, `busy`, and `dry_run`. They are regenerated by `pytest` and committed so reviewers can eyeball schema changes.
 

@@ -1,6 +1,6 @@
 {
-  "activity": "unknown",
-  "activity_since": null,
+  "activity": "idle",
+  "activity_since": "2026-08-03T03:20:23.437735Z",
   "allowed_actions": [
     "claim",
     "heartbeat",
