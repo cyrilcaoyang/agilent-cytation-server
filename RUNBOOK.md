@@ -114,10 +114,30 @@ standalone use of the imaging path go through Spinnaker.
    ```powershell
    Remove-Item -Recurse -Force .venv     # if it exists on a newer Python
    C:\SDL_Tools\uv.exe venv --python 3.10
-   C:\SDL_Tools\uv.exe sync --extra api --extra plr --extra windows
+   C:\SDL_Tools\uv.exe sync --extra api --extra plr --extra windows --extra imaging
    C:\SDL_Tools\uv.exe pip install "<path>\spinnaker_python-X.Y.Z-cp310-cp310-win_amd64.whl"
-   C:\SDL_Tools\uv.exe pip install "numpy<2"   # PySpin is built against NumPy 1.x
    ```
+   `--extra imaging` installs `numpy<2` and `pillow` — the array PySpin
+   hands back and the PNG writer. The NumPy pin is load-bearing (PySpin is
+   built against the 1.x C ABI), which is why it lives in the lockfile now
+   rather than in a follow-up `uv pip install` that the next sync would
+   undo.
+
+   > **PySpin is outside the lockfile, and plain `uv run` deletes it.**
+   > FLIR does not publish to PyPI, so no resolver can fetch the wheel and
+   > `pyproject.toml` cannot declare it (declaring it would break `uv sync`
+   > on every box without the file). But `uv run` re-syncs the environment
+   > at every start and prunes anything not in the lock — so a service
+   > launched via `uv run` silently disarms its own camera on the next
+   > restart. This is what happened here between 2026-05-21 (working
+   > brightfield captures in `captures/`) and 2026-08-12 (PySpin, numpy and
+   > pillow all absent).
+   >
+   > The deployed service therefore runs **`uv run --no-sync`** (see §7 and
+   > the `AppParameters` below). Consequence to remember: the environment is
+   > no longer updated behind the service's back, so a release that changes
+   > dependencies needs an explicit `uv sync` — which is exactly what §7
+   > already tells you to do.
 5. **Smoke-test PySpin** end-to-end (system import → camera
    enumerate):
    ```powershell
@@ -409,13 +429,34 @@ Per `ac-organic-lab/docs/DEVICE_PC_SETUP.md` §4:
 ```powershell
 # Run as Administrator on the lab PC.
 cd C:\Users\sdl2\Projects\agilent-cytation-server
+nssm stop cytation                            # see the note below on why stop first
 git pull
-C:\SDL_Tools\uv.exe sync --extra api          # add --extra plr --extra windows if running real HW
-nssm restart cytation
+C:\SDL_Tools\uv.exe sync --extra api --extra plr --extra windows --extra imaging
+sc.exe start cytation
 sc.exe query cytation | Select-String STATE   # RUNNING
 ```
 
-If `pyproject.toml` deps changed, `uv sync` updates `.venv` and `nssm restart` rolls the service. Total downtime: ~5 s.
+`uv sync` updates `.venv` and the restart rolls the service. Total downtime: ~15 s (the reader reconnects and the camera initialises during startup).
+
+Two things worth knowing:
+
+- **Stop before syncing when dependencies changed.** The running service
+  holds its own `Scripts\agilent-cytation-serve.exe`, and a dependency
+  change makes uv replace that shim — which fails with `os error 32` and
+  **aborts the whole install transaction**, potentially leaving a new
+  dependency uninstalled while the old process keeps running happily from
+  memory. Hit live on 2026-08-12. The `.venv` is fine in this case; do
+  **not** apply the rename-`.venv` recovery, which is for a different
+  failure (see DEVICE_PC_SETUP §8).
+- **`uv sync` does not reinstall PySpin** — it is not in the lockfile (§3.1).
+  After any operation that rebuilt the venv, re-install the wheel and
+  confirm:
+  ```powershell
+  C:\SDL_Tools\uv.exe run --no-sync python -c "import PySpin; print('PySpin OK')"
+  ```
+  If this fails, the reader still works but every capture returns HTTP 412
+  `camera_not_ready`, and `/status` reports `components.imaging.connected:
+  false` with the reason in `details.imaging.camera_error`.
 
 ---
 

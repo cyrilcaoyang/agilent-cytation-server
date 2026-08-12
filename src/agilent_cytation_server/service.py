@@ -36,6 +36,7 @@ from typing import Any, Callable
 
 from . import config as _config
 from .claims import ClaimManager
+from .errors import PreconditionNotMet, describe
 from .models import (
     PROTOCOL_VERSION,
     ComponentStatus,
@@ -371,6 +372,13 @@ class CytationService:
         """
         chosen = model or self.default_plate_model
         async with self._lock:
+            # The reader's own resource tree must learn about the plate too,
+            # not just our sample-tracking store: PyLabRobot routes every
+            # read through `PlateReader.get_plate()` and raises NoPlateError
+            # when nothing is assigned. Loading here is what makes
+            # `read.absorbance` and friends reachable at all.
+            if self._reader is not None and self._reader.is_connected():
+                chosen = self._reader.load_plate(plate_id=plate_id, model=chosen)
             return self.plate_state.load_plate(
                 plate_id=plate_id, model=chosen, wells=wells
             )
@@ -378,6 +386,8 @@ class CytationService:
     async def unload_plate(self) -> LoadedPlate | None:
         """Clear the currently-loaded plate. Returns the prior plate (if any)."""
         async with self._lock:
+            if self._reader is not None:
+                self._reader.unload_plate()
             return self.plate_state.unload_plate()
 
     async def update_well(
@@ -446,7 +456,6 @@ class CytationService:
         wells: list[str],
         excitation_nm: float,
         emission_nm: float,
-        gain: float = 50.0,
         focal_height_mm: float = 7.0,
     ) -> dict[str, float]:
         async with self._lock:
@@ -456,7 +465,6 @@ class CytationService:
                     wells=wells,
                     excitation_nm=excitation_nm,
                     emission_nm=emission_nm,
-                    gain=gain,
                     focal_height_mm=focal_height_mm,
                 )
                 self._read_count += 1
@@ -467,16 +475,16 @@ class CytationService:
         self,
         *,
         wells: list[str],
+        focal_height_mm: float = 7.0,
         integration_time_s: float = 1.0,
-        gain: float = 50.0,
     ) -> dict[str, float]:
         async with self._lock:
             self._require_connected()
             async with self._operation("read.luminescence", counts_as_cycle=True):
                 result = await self._reader.read_luminescence(
                     wells=wells,
+                    focal_height_mm=focal_height_mm,
                     integration_time_s=integration_time_s,
-                    gain=gain,
                 )
                 self._read_count += 1
                 self._last_read_at = time.monotonic()
@@ -490,6 +498,8 @@ class CytationService:
         focal_height_mm: float = 5.0,
         exposure_ms: float = 10.0,
         gain: float = 1.0,
+        objective: str | None = None,
+        led_intensity: int = 10,
     ) -> dict[str, Any]:
         async with self._lock:
             self._require_connected()
@@ -504,6 +514,8 @@ class CytationService:
                     focal_height_mm=focal_height_mm,
                     exposure_ms=exposure_ms,
                     gain=gain,
+                    objective=objective,
+                    led_intensity=led_intensity,
                 )
 
     # ------------------------------------------------------------------
@@ -556,6 +568,16 @@ class CytationService:
             yield
             if counts_as_cycle:
                 self._cycles_total += 1
+        except (PreconditionNotMet, ValueError) as exc:
+            # §6.3: a refusal is NOT an operational failure. The equipment is
+            # healthy and simply declined an inapplicable request (no plate
+            # loaded, camera down, a channel whose filter cube is not fitted,
+            # a well not on the plate). Recording these would drive the device
+            # to `error` and light up the dashboard tile for something that
+            # never broke — and would corrupt the meaning of `last_error` as
+            # "the most recent thing that actually went wrong".
+            logger.info("Cytation refused %s: %s", code, exc)
+            raise
         except Exception as exc:
             self._record_error(exc, code)
             raise
@@ -617,11 +639,58 @@ class CytationService:
             "plate_stage": ComponentStatus(connected=True, state=self._drawer),
         }
         if self.imaging_enabled:
+            # `connected` tracks the camera, not the config flag. Reporting a
+            # connected imager because someone wrote `enabled = true` told
+            # every reader the opposite of the truth whenever PySpin or the
+            # Blackfly was missing, and §2.2 forbids hiding a subsystem fault.
+            camera_ready = self._camera_ready()
             comps["imaging"] = ComponentStatus(
-                connected=True,
-                state="busy" if self._busy_state else "idle",
+                connected=camera_ready,
+                state=("busy" if self._busy_state else "idle")
+                if camera_ready
+                else "disconnected",
+                message=None if camera_ready else self._camera_error(),
             )
         return comps
+
+    def _camera_ready(self) -> bool:
+        if self._reader is None or not self.imaging_enabled:
+            return False
+        probe = getattr(self._reader, "camera_ready", None)
+        if probe is None:
+            return False
+        try:
+            return bool(probe())
+        except Exception:  # pragma: no cover - defensive
+            return False
+
+    def _camera_error(self) -> str | None:
+        probe = getattr(self._reader, "camera_error", None)
+        if probe is None:
+            return "Camera state unknown"
+        try:
+            return probe() or "Camera not initialised"
+        except Exception:  # pragma: no cover - defensive
+            return "Camera not initialised"
+
+    def _plate_loaded(self) -> bool:
+        """Is a plate assigned in the *reader's* resource tree?
+
+        Deliberately asks the reader rather than the PlateStateStore: the
+        store survives restarts, so it can claim a plate the freshly
+        reconnected reader knows nothing about. Reads go through the reader,
+        so the reader is the authority for whether one can succeed.
+        """
+
+        if self._reader is None:
+            return False
+        probe = getattr(self._reader, "has_plate", None)
+        if probe is None:
+            return False
+        try:
+            return bool(probe())
+        except Exception:  # pragma: no cover - defensive
+            return False
 
     def _base_details(
         self,
@@ -630,14 +699,43 @@ class CytationService:
     ) -> dict[str, Any]:
         plate = self.plate_state.get()
         holder = self.claims.current()
-        return {
+        details: dict[str, Any] = {
             "drawer": drawer_override if drawer_override is not None else self._drawer,
             "backend": str(_config.get("instrument", "backend", "cytation5")),
             "imaging_enabled": self.imaging_enabled,
             "loaded_plate": plate.model_dump(mode="json") if plate else None,
             "claimed_by": holder.model_dump(mode="json") if holder else None,
             "claims_enforced": self.claims.enforce,
+            # Whether the reader itself holds a plate, as distinct from what
+            # the persisted store remembers — the two disagree after a
+            # restart, and only the former permits a read.
+            "plate_in_reader": self._plate_loaded(),
         }
+        if self.imaging_enabled:
+            camera_ready = self._camera_ready()
+            imaging: dict[str, Any] = {
+                "camera_ready": camera_ready,
+                "camera_error": None if camera_ready else self._camera_error(),
+            }
+            # The instrument's own fit-out, read from its configuration.
+            # Published so "that channel needs a cube you don't have" is
+            # answerable from /status instead of by opening the box.
+            inventory = getattr(self._reader, "optics_inventory", None)
+            if inventory is not None:
+                try:
+                    optics = inventory()
+                    imaging.update(
+                        {
+                            "installed_objectives": optics["objectives"],
+                            "installed_filters": optics["filters"],
+                            "objective_slots": optics["objective_slots"],
+                            "filter_slots": optics["filter_slots"],
+                        }
+                    )
+                except Exception:  # pragma: no cover - defensive
+                    pass
+            details["imaging"] = imaging
+        return details
 
     def _allowed_actions(self, state: str, activity: str = "idle") -> list[str]:
         """Return the skills this device will currently honor on /control/*.
@@ -660,6 +758,15 @@ class CytationService:
         if state == "requires_init":
             return [*always, "startup"]
         if state == "dry_run" or state == "ready":
+            # Two preconditions gate the optical actions, and both are
+            # mirrored here because §6.2 requires that an action listed in
+            # allowed_actions cannot be refused if invoked immediately:
+            #
+            #  - reads and captures need a plate assigned in the reader
+            #    (PyLabRobot raises NoPlateError otherwise);
+            #  - captures additionally need the camera initialised.
+            plate_loaded = self._plate_loaded()
+            can_image = self.imaging_enabled and self._camera_ready() and plate_loaded
             return [
                 *always,
                 "shutdown",
@@ -668,10 +775,16 @@ class CytationService:
                 "plate.load",
                 "plate.unload",
                 "well.update",
-                "read.absorbance",
-                "read.fluorescence",
-                "read.luminescence",
-                *(["imaging.capture"] if self.imaging_enabled else []),
+                *(
+                    [
+                        "read.absorbance",
+                        "read.fluorescence",
+                        "read.luminescence",
+                    ]
+                    if plate_loaded
+                    else []
+                ),
+                *(["imaging.capture"] if can_image else []),
             ]
         if state == "busy":
             return [*always]
@@ -682,7 +795,7 @@ class CytationService:
     def _record_error(self, exc: Exception, code: str) -> None:
         self._last_error = ErrorInfo(
             code=code,
-            message=str(exc),
+            message=describe(exc),
             severity="error",
             timestamp=datetime.now(timezone.utc),
         )

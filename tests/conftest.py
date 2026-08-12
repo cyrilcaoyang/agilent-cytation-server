@@ -61,3 +61,19 @@ def advisory_client(plate_state: PlateStateStore) -> Iterator[TestClient]:
     )
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture
+def loaded_client(advisory_client: TestClient) -> TestClient:
+    """An advisory client with a plate already loaded.
+
+    Reads and captures are gated on a plate being resident in the reader —
+    PyLabRobot addresses wells through the ``Plate`` resource and raises
+    ``NoPlateError`` without one — so every optical test needs this. Kept as
+    a fixture so the precondition is stated once, and so the tests that
+    assert the *refusal* can still use the bare ``advisory_client``.
+    """
+
+    r = advisory_client.post("/control/plate/load", json={"plate_id": "test_plate"})
+    assert r.status_code == 200, r.text
+    return advisory_client

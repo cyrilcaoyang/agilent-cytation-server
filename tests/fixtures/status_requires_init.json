@@ -1,6 +1,6 @@
 {
   "activity": "idle",
-  "activity_since": "2026-08-03T03:20:23.437735Z",
+  "activity_since": "2026-08-12T15:20:50.688501Z",
   "allowed_actions": [
     "claim",
     "heartbeat",
@@ -38,8 +38,13 @@
     "claimed_by": null,
     "claims_enforced": true,
     "drawer": "unknown",
+    "imaging": {
+      "camera_error": "Camera state unknown",
+      "camera_ready": false
+    },
     "imaging_enabled": true,
-    "loaded_plate": null
+    "loaded_plate": null,
+    "plate_in_reader": false
   },
   "device_time": "2026-04-29T22:50:01Z",
   "equipment_id": "cytation_5",

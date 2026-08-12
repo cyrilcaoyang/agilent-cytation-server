@@ -46,9 +46,15 @@ def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
-def _started_service() -> CytationService:
+def _started_service(*, with_plate: bool = False) -> CytationService:
     svc = CytationService(dry_run=False, reader_factory=StubCytationReader)
     _run(svc.startup())
+    if with_plate:
+        # Loaded straight onto the reader rather than through
+        # `svc.load_plate`, which would persist to the PlateStateStore and so
+        # write this repo's real state.json. The read precondition is
+        # reader-side anyway, so this is the state under test.
+        svc._reader.load_plate(plate_id="test_plate")  # type: ignore[union-attr]
     return svc
 
 
@@ -178,7 +184,7 @@ def test_cycles_total_counts_reads_and_captures() -> None:
     not a sampled activity series — is what makes the work accountable
     (§2.3.1)."""
 
-    svc = _started_service()
+    svc = _started_service(with_plate=True)
     assert _run(svc.get_status()).metrics["cycles_total"].value == 0
 
     _run(svc.read_absorbance(wells=["A1"], wavelength_nm=600.0))

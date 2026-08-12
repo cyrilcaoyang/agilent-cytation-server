@@ -47,6 +47,27 @@ windows = [
     # pylabrobot.io.ftdi (Cytation 5 backend) imports pylibftdi.
     "pylibftdi>=0.20; sys_platform == 'win32'",
 ]
+imaging = [
+    # The microscopy path. numpy is what pylabrobot's `_acquire_image`
+    # hands back; pillow is what turns that array into a PNG on disk.
+    #
+    # numpy is pinned <2 because PySpin is built against the 1.x C ABI —
+    # under 2.x, `import PySpin` dies with "numpy.core.multiarray failed
+    # to import". This pin is load-bearing, not tidiness.
+    "numpy<2",
+    "pillow>=10",
+    # NOTE: spinnaker_python (PySpin) is deliberately NOT declared here.
+    # FLIR does not publish it to PyPI — it ships as a per-CPython-minor
+    # wheel from Teledyne's portal, so no resolver can fetch it, and
+    # declaring it would break `uv sync` on every box lacking the file.
+    # Install it out-of-band:
+    #
+    #   uv pip install "<path>\spinnaker_python-<ver>-cp310-cp310-win_amd64.whl"
+    #
+    # Because it sits outside the lockfile, plain `uv run` PRUNES it at
+    # every start. The deployed service therefore runs `uv run --no-sync`
+    # so the env is never rebuilt behind the service's back. RUNBOOK §3.1.
+]
 dev = [
     "pytest>=7.0",
     "httpx>=0.27",

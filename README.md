@@ -2,7 +2,16 @@
 
 PyLabRobot-backed Python driver and REST API service for the **BioTek (Agilent) Cytation 5 Multi-Mode Reader**, communicating over USB. Driver layer is `pylabrobot.plate_reading.PlateReader` + `pylabrobot.plate_reading.biotek.Cytation5Backend`. The service exposes the unified lab equipment status spec so the AC Organic Self-Driving Lab dashboard can poll it like any other device.
 
-> **API conformance:** This repo conforms to **lab status spec v1.2** — see `docs/STATUS_SPEC.md` in the [`ac-organic-lab`](https://github.com/cyrilcaoyang/ac-organic-lab) monorepo. The wire types come from the shared `sdl-lab-contract` package. The full `/control/*` write surface is wired (drawer, reads, plate load/unload, imaging capture, claim/heartbeat/release), and `/status` reports v1.2 `activity` observed from the instrument — see [Activity and utilization](#activity-and-utilization-v12). Hardware verification against the real Cytation 5 is still pending — see `RUNBOOK.md` §3-§4.
+> **API conformance:** This repo conforms to **lab status spec v1.2** — see `docs/STATUS_SPEC.md` in the [`ac-organic-lab`](https://github.com/cyrilcaoyang/ac-organic-lab) monorepo. The wire types come from the shared `sdl-lab-contract` package. The full `/control/*` write surface is wired (drawer, reads, plate load/unload, imaging capture, claim/heartbeat/release), and `/status` reports v1.2 `activity` observed from the instrument — see [Activity and utilization](#activity-and-utilization-v12).
+>
+> **Hardware verification status (2026-08-12).** `imaging.capture` is
+> **verified end-to-end on the real instrument** through the REST surface
+> (claim → plate.load → brightfield capture of A1 → 2448×2048 PNG →
+> `cycles_total` incremented). The **reads are not yet verified**: the call
+> now reaches the instrument with correct arguments, but the driver's
+> acknowledgement assertion fails with no plate physically present, so
+> confirming absorbance / fluorescence needs a plate in the reader and
+> someone at the bench. See `RUNBOOK.md` §3-§4.
 
 ### Activity and utilization (v1.2)
 
@@ -131,10 +140,57 @@ v1.1 control verbs (all require `X-Claim-Token` when `[service].enforce_claims =
 | POST | `/control/plate/load` | `{plate_id, model?, wells?}` |
 | POST | `/control/plate/unload` | — |
 | POST | `/control/well/update` | `{well, sample_id?, volume_ul?, notes?, clear_sample_id?, clear_notes?}` |
-| POST | `/control/read/absorbance` | `{wells, wavelength_nm}` |
-| POST | `/control/read/fluorescence` | `{wells, excitation_nm, emission_nm, gain?, focal_height_mm?}` |
-| POST | `/control/read/luminescence` | `{wells, integration_time_s?, gain?}` |
-| POST | `/control/imaging/capture` | `{well, channel, focal_height_mm?, exposure_ms?, gain?}` |
+| POST | `/control/read/absorbance` | `{wells, wavelength_nm}` — 230–999 nm |
+| POST | `/control/read/fluorescence` | `{wells, excitation_nm, emission_nm, focal_height_mm?}` — ex/em 250–700 nm |
+| POST | `/control/read/luminescence` | `{wells, focal_height_mm?, integration_time_s?}` |
+| POST | `/control/imaging/capture` | `{well, channel, objective?, focal_height_mm?, exposure_ms?, gain?, led_intensity?}` |
+
+Bounds mirror what PyLabRobot's BioTek backend enforces itself, so an
+out-of-range request is a 422 naming the field rather than a 500 from inside
+the driver. `focal_height_mm` is 4.5–13.88 on all three reads.
+
+**The reads take no gain parameter, and passing one is a 422.** PyLabRobot's
+Cytation backend exposes no gain control on any read, and silently dropping
+the field would return a plausible number measured at some *other* gain — a
+wrong result that looks right. (`imaging.capture`'s `gain` is unrelated: it is
+the Spinnaker camera's analog gain in dB.)
+
+### Preconditions
+
+Both reads and captures are gated, and per STATUS_SPEC §6.2 the gates are
+mirrored in `allowed_actions` — an action that would be refused is never
+advertised:
+
+| Precondition | Refusal | Applies to |
+|---|---|---|
+| A plate must be loaded (`POST /control/plate/load`) | 412 `plate_not_loaded` | all reads + capture |
+| The camera must have initialised | 412 `camera_not_ready` | capture |
+| A fluorescence channel's filter cube must be fitted | 422 naming the fitted cubes | capture |
+
+The plate requirement is not bookkeeping: PyLabRobot addresses wells through
+the `Plate` resource assigned to the `PlateReader`, and raises `NoPlateError`
+without one. Loading a plate assigns that resource as well as recording
+sample metadata.
+
+### What this instrument can actually do
+
+Read from `details.imaging` on `/status` rather than assuming — the fit-out is
+queried from the instrument's own configuration. As of 2026-08-12 on
+`sdl2-pc-03-cytation`:
+
+| Capability | State | Needs |
+|---|---|---|
+| Absorbance (UV-Vis), 230–999 nm | ✅ available | nothing |
+| Fluorescence intensity reads, ex/em 250–700 nm | ✅ available | nothing |
+| Luminescence | ✅ available | nothing |
+| Brightfield imaging (bottom-up) | ✅ **verified live** 2026-08-12 | nothing |
+| Phase-contrast imaging | likely — all 3 objectives are `PL_FL_Phase` | phase annulus in the condenser; untested |
+| Fluorescence imaging (DAPI/GFP/RFP/Cy5…) | ❌ **blocked** | ≥1 filter cube — the wheel reports **4 slots, all empty** |
+| Absorbance/fluorescence **spectral scans** | ❌ not available | upstream work; PyLabRobot has no spectrum method |
+
+Objective turret: 6 slots, 3 fitted — `O_4X_PL_FL_Phase`, `O_20X_PL_FL_Phase`,
+`O_40X_PL_FL_Phase`. Camera: FLIR Chameleon3 `CM3-U3-50S5M`, 2448×2048 mono
+(so `color_brightfield` is not usable on this unit).
 
 ### Quick check
 

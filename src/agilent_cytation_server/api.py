@@ -50,6 +50,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import config as _config
 from .claims import ClaimManager, ClaimRejectedError
+from .errors import PreconditionNotMet, describe
 from .control_args import (
     AbsorbanceArgs,
     DrawerArgs,
@@ -245,9 +246,32 @@ def create_app(
             )
 
     def _wrap_runtime(exc: Exception) -> HTTPException:
+        """Map a control-path failure onto the status code the spec wants.
+
+        Three distinct things get three codes, because a client's correct
+        response differs for each (STATUS_SPEC §6.1):
+
+        * **412** — a precondition is unmet (no plate, camera down). The
+          request would be valid once the device is readied; the body is
+          shaped so a client branches on ``precondition``, not on prose.
+        * **422** — the request itself is wrong (unknown well, channel, or
+          objective). Retrying unchanged can never help.
+        * **503** — an actual execution failure. Retrying may help.
+        """
+
+        if isinstance(exc, PreconditionNotMet):
+            return HTTPException(
+                status_code=http_status.HTTP_412_PRECONDITION_FAILED,
+                detail=exc.to_body(),
+            )
+        if isinstance(exc, ValueError):
+            return HTTPException(
+                status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=describe(exc),
+            )
         return HTTPException(
             status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
+            detail=describe(exc),
         )
 
     # ---- lifecycle --------------------------------------------------
@@ -395,7 +419,6 @@ def create_app(
                 wells=body.wells,
                 excitation_nm=body.excitation_nm,
                 emission_nm=body.emission_nm,
-                gain=body.gain,
                 focal_height_mm=body.focal_height_mm,
             )
         except Exception as exc:
@@ -415,8 +438,8 @@ def create_app(
         try:
             wells = await service.read_luminescence(
                 wells=body.wells,
+                focal_height_mm=body.focal_height_mm,
                 integration_time_s=body.integration_time_s,
-                gain=body.gain,
             )
         except Exception as exc:
             raise _wrap_runtime(exc) from exc
@@ -441,20 +464,24 @@ def create_app(
                 focal_height_mm=body.focal_height_mm,
                 exposure_ms=body.exposure_ms,
                 gain=body.gain,
+                objective=body.objective,
+                led_intensity=body.led_intensity,
             )
         except Exception as exc:
             raise _wrap_runtime(exc) from exc
+        # The channel/objective echoed back are the *resolved* ones, so a
+        # caller who passed "uv" or omitted the objective learns what the
+        # instrument actually used.
+        promoted = {"well", "channel", "focal_height_mm", "exposure_ms", "gain", "objective"}
         return ImagingCaptureResponse(
             well=body.well,
-            channel=body.channel,
+            channel=str(payload.get("channel", body.channel)),
             focal_height_mm=body.focal_height_mm,
             exposure_ms=body.exposure_ms,
             gain=body.gain,
-            details={
-                k: v
-                for k, v in payload.items()
-                if k not in {"well", "channel", "focal_height_mm", "exposure_ms", "gain"}
-            },
+            objective=payload.get("objective"),
+            image_path=payload.get("image_path"),
+            details={k: v for k, v in payload.items() if k not in promoted},
         )
 
     # Expose the service for tests / debugging — standard FastAPI pattern.

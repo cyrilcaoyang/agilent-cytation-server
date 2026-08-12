@@ -1,6 +1,6 @@
 {
   "activity": "idle",
-  "activity_since": "2026-08-03T03:20:23.454814Z",
+  "activity_since": "2026-08-12T15:20:50.707513Z",
   "allowed_actions": [
     "claim",
     "heartbeat",
@@ -10,11 +10,7 @@
     "drawer.close",
     "plate.load",
     "plate.unload",
-    "well.update",
-    "read.absorbance",
-    "read.fluorescence",
-    "read.luminescence",
-    "imaging.capture"
+    "well.update"
   ],
   "components": {
     "imaging": {
@@ -47,8 +43,24 @@
     "claimed_by": null,
     "claims_enforced": true,
     "drawer": "in",
+    "imaging": {
+      "camera_error": null,
+      "camera_ready": true,
+      "filter_slots": 4,
+      "installed_filters": [
+        "DAPI",
+        "GFP",
+        "RFP"
+      ],
+      "installed_objectives": [
+        "O_4X_PL_FL",
+        "O_20X_PL_FL"
+      ],
+      "objective_slots": 6
+    },
     "imaging_enabled": true,
     "loaded_plate": null,
+    "plate_in_reader": false,
     "readback_age_s": 0.0
   },
   "device_time": "2026-04-29T22:50:01Z",
