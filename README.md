@@ -62,13 +62,14 @@ C:\SDL_Tools\uv.exe sync --extra dev
 C:\SDL_Tools\uv.exe run pytest -q
 
 # Run the service in the foreground for a quick smoke check
+# (9333 on purpose: the deployed NSSM service already holds 8040)
 C:\SDL_Tools\uv.exe run --extra api agilent-cytation-serve --port 9333 --dry-run
 
 # Production sync (pylabrobot + pyusb + libusb-package + fastapi)
 C:\SDL_Tools\uv.exe sync --extra api --extra plr --extra windows
 ```
 
-For **production deployment** (NSSM-wrapped Windows Service that auto-starts on boot, logs to `C:\SDL_Logs\cytation.{out,err}.log`), follow the canonical recipe in [`ac-organic-lab/docs/DEVICE_PC_SETUP.md`](https://github.com/cyrilcaoyang/ac-organic-lab/blob/main/docs/DEVICE_PC_SETUP.md). The Cytation 5 PC also runs the xArm service on port 8000; this Cytation service uses port **9333** to avoid conflicts.
+For **production deployment** (NSSM-wrapped Windows Service that auto-starts on boot, logs to `C:\SDL_Logs\cytation.{out,err}.log`), follow the canonical recipe in [`ac-organic-lab/docs/DEVICE_PC_SETUP.md`](https://github.com/cyrilcaoyang/ac-organic-lab/blob/main/docs/DEVICE_PC_SETUP.md). The code's default port is 9333, but the deployed instance runs on port **8040** (set in `config.toml` — the Cytation PC hosts several services; see DEVICE_PC_SETUP §7 for the port map). Do **not** give the service a `DependOnService` on Tailscale or anything else — see `RUNBOOK.md` §6 for the 2026-08-10 outage that rule comes from.
 
 For **day-to-day operations on the lab PC** (driver swaps for Gen5 ↔ PyLabRobot, log tailing, restart, update from `git pull`), see [`RUNBOOK.md`](./RUNBOOK.md).
 
@@ -94,7 +95,7 @@ All instrument-specific settings live in `config.toml` (gitignored). Copy `confi
 | `[imaging].enabled` | `true` for Cytation 5 with the microscopy module |
 | `[plates].default_model` | `custom_96` or `agilent_shallow_96` |
 | `[plates.custom_96]` / `[plates.agilent_shallow_96]` | plate geometry (mm) and well max volume (µL) |
-| `[service].host` / `[service].port` | bind address and port (default `0.0.0.0:9333`) |
+| `[service].host` / `[service].port` | bind address and port (code default `0.0.0.0:9333`; the deployed PC sets `8040` in `config.toml`) |
 | `[service].dry_run` | force stub at startup (use `true` for development) |
 | `[service].cors_origins` | CORS whitelist; `["*"]` is fine on Tailnet |
 | `[service].startup_connect_timeout_s` | give-up timeout for the lifespan auto-connect |
@@ -138,9 +139,9 @@ v1.1 control verbs (all require `X-Claim-Token` when `[service].enforce_claims =
 ### Quick check
 
 ```bash
-curl http://sdl2-pc-03-cytation:9333/
-curl http://sdl2-pc-03-cytation:9333/health
-curl http://sdl2-pc-03-cytation:9333/status | jq
+curl http://sdl2-pc-03-cytation:8040/
+curl http://sdl2-pc-03-cytation:8040/health
+curl http://sdl2-pc-03-cytation:8040/status | jq
 ```
 
 ### Spec conformance notes
@@ -198,23 +199,23 @@ agilent-cytation-server/
 
 ## Equipment registry entry
 
-Once the service is up on the Cytation PC, register it in [`ac-organic-lab/equipment.yaml`](https://github.com/cyrilcaoyang/ac-organic-lab/blob/main/equipment.yaml) (one-line PR). The slot already exists with `adapter: mock`; flip it to:
+The service is registered in [`ac-organic-lab/equipment.yaml`](https://github.com/cyrilcaoyang/ac-organic-lab/blob/main/equipment.yaml); the live entry (registry schema v2 — `tiles:` keyed by section, no `platform:` field) is:
 
 ```yaml
 - id: cytation_5
   name: BioTek Cytation 5
-  platform: hte
   kind: plate_reader
   adapter: http
-  protocol: "1.0"
-  base_url: http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:9333
+  protocol: "1.2"
+  base_url: http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:8040
+  tailscale_ip: 100.64.254.16
   status_path: /status
-  poll_timeout_seconds: 5.0
-  do_not_call_connect: true
-  tile: { w: 2, h: 2 }
+  poll_timeout_seconds: 3.0
+  tiles:
+    hte: { w: 2, h: 1 }
 ```
 
-Then `sudo systemctl restart ac-dashboard-api.service` per `docs/EQUIPMENT_INTEGRATION.md` §1.C in the monorepo.
+After a registry change, restart the dashboard API per `docs/EQUIPMENT_INTEGRATION.md` §1.C in the monorepo (equipment.yaml loads at startup).
 
 ## Legal / Licensing
 

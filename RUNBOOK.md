@@ -10,7 +10,7 @@ This runbook is the **source of truth** for procedures that touch the live instr
 
 | You want to… | Do this |
 |---|---|
-| Check service health | `sc.exe query cytation` and `curl http://127.0.0.1:9333/status` |
+| Check service health | `sc.exe query cytation` and `curl http://127.0.0.1:8040/status` |
 | Tail the logs | `Get-Content C:\SDL_Logs\cytation.out.log -Tail 30 -Wait` |
 | Restart the service | `nssm restart cytation` |
 | Stop the service | `nssm stop cytation` |
@@ -369,7 +369,7 @@ If Windows fails to find a driver at this step, install FTDI CDM from <https://f
 ```powershell
 sc.exe start cytation
 Start-Sleep -Seconds 5
-curl.exe -fsS http://127.0.0.1:9333/status |
+curl.exe -fsS http://127.0.0.1:8040/status |
     ConvertFrom-Json |
     Select-Object equipment_status
 # Expected: dry_run
@@ -398,6 +398,7 @@ The dashboard tile will return to `dry_run` (yellow/blue, depending on theme) on
 | Service log says `RuntimeError: pylibftdi is not installed` | The `pylibftdi` Python wrapper was removed from `windows` extra, or `uv sync` was run without `--extra windows` | Re-run `uv sync --extra api --extra plr --extra windows`; verify `pylibftdi` is listed in `pyproject.toml`'s `windows` extra |
 | Service log says `NotImplementedError: Operation not supported or unimplemented on this platform` from `libusb_open` | Another FTDI device on the bus is bound to `FTDIBUS`/`FTSER2K`; PyLabRobot's enumeration tries to open it and fails | Confirm `_patch_pylabrobot_ftdi_enumeration` runs at service-start (search log for `Patched pylabrobot.io.ftdi.FTDI...`); also pin `[instrument].usb_serial` per §3.4 |
 | Service log says `CytationBackend.__init__() got an unexpected keyword argument 'serial_number'` (or any kwarg name) | kwarg name drift between pylabrobot versions | `C:\SDL_Tools\uv.exe run python -c "import inspect; from pylabrobot.plate_reading.agilent.biotek_cytation_backend import CytationBackend; print(inspect.signature(CytationBackend.__init__))"`; update `reader.py:_create_reader` to match |
+| Service is `STOPPED` with exit code 0 and a *clean* uvicorn shutdown in the log, while the other services on this PC run fine | Something sent SCM a STOP control; a clean stop is not a crash, so NSSM's restart-on-failure never fires. **Happened live 2026-08-10** (~12.5 h offline): this service alone carried `DependOnService: Tailscale`, and the Tailscale MSI auto-updater stopped its service — SCM stopped `cytation` with it and restarted nothing. The dependency is removed and must not come back (DEVICE_PC_SETUP §6). | `sc.exe start cytation`. Then check `sc.exe qc cytation` shows an empty `DEPENDENCIES:`; if not, clear with `sc.exe config cytation depend= ""` — `nssm reset cytation DependOnService` claims success but does not clear it. Diagnose recurrences by correlating `nssm` event 1040 with `MsiInstaller` events in the Application log. |
 
 ---
 
