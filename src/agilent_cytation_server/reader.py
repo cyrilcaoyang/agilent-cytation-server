@@ -189,6 +189,8 @@ class CytationReader:
         self._plate_model: str | None = None
         self._camera_ready = False
         self._camera_error: str | None = None
+        self._firmware_version: str | None = None
+        self._serial_number: str | None = None
         self._connected = False
 
     # ------------------------------------------------------------------
@@ -267,12 +269,55 @@ class CytationReader:
         # so this works even with PySpin missing. Purely informational, so
         # never fatal.
         await self._load_optics_inventory()
+        await self._load_identity()
 
         logger.info(
-            "Cytation connected (usb_serial=%r, camera_ready=%s)",
+            "Cytation connected (usb_serial=%r, firmware=%r, camera_ready=%s)",
             self.usb_serial,
+            self._firmware_version,
             self._camera_ready,
         )
+
+    async def _load_identity(self) -> None:
+        """Read firmware version and serial number once, at connect.
+
+        Cached rather than polled: they never change while connected, and
+        `/status` must not issue instrument I/O on the request path. The
+        firmware version is load-bearing beyond bookkeeping — the driver
+        refuses phase-contrast imaging when it starts with "1" (its Cytation1
+        discriminator), so this is what tells an operator whether that channel
+        is available at all.
+        """
+
+        backend = self._backend
+        if backend is None:
+            return
+        for attr, target in (
+            ("get_firmware_version", "_firmware_version"),
+            ("get_serial_number", "_serial_number"),
+        ):
+            fn = getattr(backend, attr, None)
+            if fn is None:
+                continue
+            try:
+                value = await fn()
+            except Exception as exc:  # pragma: no cover - hardware-specific
+                logger.debug("Cytation %s failed: %s", attr, exc)
+                continue
+            if value:
+                setattr(self, target, str(value).strip())
+
+    def supports_phase_contrast(self) -> bool | None:
+        """Whether the driver will accept PHASE_CONTRAST on this unit.
+
+        ``None`` when the firmware version is unknown. PyLabRobot raises
+        ``NotImplementedError`` for phase contrast on Cytation1, which it
+        identifies by the firmware version string starting with "1".
+        """
+
+        if self._firmware_version is None:
+            return None
+        return not self._firmware_version.startswith("1")
 
     async def _load_optics_inventory(self) -> None:
         """Best-effort population of the backend's objective / filter lists.
@@ -484,19 +529,127 @@ class CytationReader:
         always return HTTP 200, so per-getter failures must fold into
         ``degraded`` rather than crash.
         """
-        if self._reader is None:
+        # `get_current_temperature` lives on the BACKEND. The frontend
+        # `PlateReader` has no temperature method at all, so looking it up
+        # there silently returned None on every poll — which is why
+        # `components.incubator` read `unknown` and no `actual_temperature`
+        # metric was ever published.
+        if self._backend is None:
             return None
-        getter = getattr(self._reader, "get_temperature", None)
+        getter = getattr(self._backend, "get_current_temperature", None)
         if getter is None:
+            return None
+        # Never issue instrument I/O while the shake task owns the link:
+        # `send_command` has no internal lock, so two concurrent callers
+        # interleave writes and steal each other's replies. A stale reading
+        # (with `readback_age_s` saying so) beats a corrupted exchange.
+        if self.is_shaking():
             return None
         try:
             value = await getter()
         except Exception:  # pragma: no cover - hardware-specific
-            logger.debug("Cytation get_temperature failed", exc_info=True)
+            logger.debug("Cytation get_current_temperature failed", exc_info=True)
             return None
         if isinstance(value, (int, float)):
             return float(value)
         return None
+
+    # ------------------------------------------------------------------
+    # Incubator
+    # ------------------------------------------------------------------
+
+    def temperature_range(self) -> tuple[float | None, float | None]:
+        """``(min_c, max_c)`` the driver will accept, or ``(None, None)``.
+
+        Note the driver hardcodes ``supports_cooling = True`` for every
+        Cytation, which is what produces the 4 °C floor. Active cooling below
+        ambient is not fitted on every unit, so a low setpoint may be accepted
+        here and quietly ignored by the hardware — verify on the bench before
+        an assay depends on it.
+        """
+
+        if self._backend is None:
+            return (None, None)
+        try:
+            lo, hi = self._backend.temperature_range
+            return (
+                float(lo) if lo is not None else None,
+                float(hi) if hi is not None else None,
+            )
+        except Exception:
+            return (None, None)
+
+    async def set_temperature(self, celsius: float) -> None:
+        if self._backend is None:
+            raise RuntimeError("Cytation reader is not connected")
+        await self._backend.set_temperature(celsius)
+
+    async def stop_temperature_control(self) -> None:
+        if self._backend is None:
+            raise RuntimeError("Cytation reader is not connected")
+        await self._backend.stop_heating_or_cooling()
+
+    # ------------------------------------------------------------------
+    # Shaker
+    # ------------------------------------------------------------------
+
+    def is_shaking(self) -> bool:
+        """Cheap, side-effect-free — safe to call from the status path.
+
+        Reads the backend's own flag rather than tracking our own, so a shake
+        that the driver ended (or never started) cannot leave us asserting
+        motion that isn't happening.
+        """
+
+        backend = self._backend
+        if backend is None:
+            return False
+        return bool(getattr(backend, "_shaking", False))
+
+    async def shake(self, *, pattern: str = "orbital", displacement_mm: int = 3) -> None:
+        """Start shaking and return once motion has begun.
+
+        ``displacement_mm`` is PyLabRobot's ``frequency`` argument, which is
+        not a frequency: it is the orbit displacement in mm (1-6), inversely
+        related to speed — 6 mm is ~360 CPM and 1 mm is ~1096 CPM.
+
+        The driver cannot shake indefinitely. Duration is set on the
+        instrument with a 16-minute ceiling, so PyLabRobot keeps a background
+        task alive that re-issues the command every 16 minutes; its own
+        docstring warns the door may briefly open at each boundary. Fine for
+        a mix before a read, not something to leave running unattended.
+        """
+
+        if self._backend is None:
+            raise RuntimeError("Cytation reader is not connected")
+        from pylabrobot.plate_reading.agilent.biotek_backend import (  # type: ignore[import-not-found]
+            BioTekPlateReaderBackend,
+        )
+
+        try:
+            shake_type = BioTekPlateReaderBackend.ShakeType[pattern.strip().upper()]
+        except KeyError as exc:
+            raise ValueError(
+                f"Unknown shake pattern {pattern!r}. Known: linear, orbital"
+            ) from exc
+        if not 1 <= displacement_mm <= 6:
+            raise ValueError("displacement_mm must be between 1 and 6")
+        await self._backend.shake(shake_type, displacement_mm)
+
+    async def stop_shaking(self) -> None:
+        if self._backend is None:
+            raise RuntimeError("Cytation reader is not connected")
+        await self._backend.stop_shaking()
+
+    # ------------------------------------------------------------------
+    # Identity
+    # ------------------------------------------------------------------
+
+    def firmware_version(self) -> str | None:
+        return self._firmware_version
+
+    def serial_number(self) -> str | None:
+        return self._serial_number
 
     # ------------------------------------------------------------------
     # Drawer + measurements (Phase 3+ surface — declared here so Phase 1
@@ -594,6 +747,13 @@ class CytationReader:
     # Imaging
     # ------------------------------------------------------------------
 
+    # Search budget for the auto-* helpers. Each round is a real exposure on
+    # the sample, so this is a photobleaching / phototoxicity budget as much
+    # as a time one — keep it small.
+    _AUTO_ROUNDS = 8
+    _FOCUS_TOLERANCE_MM = 0.005
+    _DEFAULT_EXPOSURE_MS = 10.0
+
     async def capture_image(
         self,
         *,
@@ -604,6 +764,11 @@ class CytationReader:
         gain: float = 1.0,
         objective: str | None = None,
         led_intensity: int = 10,
+        autofocus: bool = False,
+        auto_exposure: bool = False,
+        autofocus_range: tuple[float, float] = (4.5, 13.88),
+        auto_exposure_range: tuple[float, float] = (0.1, 500.0),
+        auto_exposure_target: float = 0.8,
     ) -> dict[str, Any]:
         """Capture one image of one well and write it to the captures dir.
 
@@ -644,15 +809,29 @@ class CytationReader:
         # (PLR's own Imager.capture passes 0-based values straight through,
         # which is an upstream off-by-one we deliberately do not copy.)
         await backend.select(row=well_obj.get_row() + 1, column=well_obj.get_column() + 1)
-        await backend.set_exposure(exposure_ms)
         await backend.set_gain(gain)
-        await backend.set_focus(focal_height_mm)
         # Centre of the selected well.
         await backend.set_position(0.0, 0.0)
 
         backend.start_acquisition()
+        tuning: dict[str, Any] = {}
         try:
-            image = await backend._acquire_image()  # noqa: SLF001 - see docstring
+            if auto_exposure:
+                exposure_ms = await self._auto_exposure(
+                    focal_height_mm=focal_height_mm,
+                    low_ms=auto_exposure_range[0],
+                    high_ms=auto_exposure_range[1],
+                    target_fraction=auto_exposure_target,
+                    tuning=tuning,
+                )
+            if autofocus:
+                focal_height_mm = await self._auto_focus(
+                    exposure_ms=exposure_ms,
+                    low_mm=autofocus_range[0],
+                    high_mm=autofocus_range[1],
+                    tuning=tuning,
+                )
+            image = await self._acquire_at(focal_height_mm, exposure_ms)
         finally:
             backend.stop_acquisition()
             try:
@@ -662,7 +841,7 @@ class CytationReader:
                 # samples, so it is worth a warning rather than silence.
                 logger.warning("Cytation led_off failed after capture: %s", exc)
 
-        return self._save_capture(
+        payload = self._save_capture(
             image,
             well=well,
             channel=mode.name,
@@ -671,6 +850,105 @@ class CytationReader:
             exposure_ms=exposure_ms,
             gain=gain,
         )
+        if tuning:
+            payload["tuning"] = tuning
+        return payload
+
+    async def _acquire_at(self, focal_height_mm: float, exposure_ms: float) -> Any:
+        """Set focus + exposure and grab one frame. Acquisition must be live."""
+
+        backend = self._backend
+        await backend.set_exposure(exposure_ms)
+        await backend.set_focus(focal_height_mm)
+        return await backend._acquire_image()  # noqa: SLF001 - see capture_image
+
+    async def _auto_exposure(
+        self,
+        *,
+        focal_height_mm: float,
+        low_ms: float,
+        high_ms: float,
+        target_fraction: float,
+        tuning: dict[str, Any],
+    ) -> float:
+        """Binary-search exposure until the peak pixel sits near target.
+
+        Uses PyLabRobot's ``max_pixel_at_fraction`` evaluator — deliberately
+        *not* its ``fraction_overexposed``, which counts pixels strictly
+        greater than ``max_pixel_value`` (255 by default) in a uint8 array.
+        Nothing can exceed 255, so that evaluator always sees a fraction of
+        zero and drives exposure upward until the frame clips — the opposite
+        of what it promises.
+        """
+
+        from pylabrobot.plate_reading.imager import (  # type: ignore[import-not-found]
+            max_pixel_at_fraction,
+        )
+
+        evaluate = max_pixel_at_fraction(fraction=target_fraction, margin=0.05)
+        lo, hi = low_ms, high_ms
+        chosen = min(max(self._DEFAULT_EXPOSURE_MS, lo), hi)
+        for _ in range(self._AUTO_ROUNDS):
+            image = await self._acquire_at(focal_height_mm, chosen)
+            verdict = await evaluate(image)
+            if verdict == "good":
+                break
+            if verdict == "lower":
+                hi = chosen
+            else:
+                lo = chosen
+            nxt = (lo + hi) / 2.0
+            if abs(nxt - chosen) < 0.01:
+                break
+            chosen = nxt
+        tuning["auto_exposure"] = {
+            "exposure_ms": round(chosen, 3),
+            "target_peak_fraction": target_fraction,
+        }
+        return chosen
+
+    async def _auto_focus(
+        self,
+        *,
+        exposure_ms: float,
+        low_mm: float,
+        high_mm: float,
+        tuning: dict[str, Any],
+    ) -> float:
+        """Golden-section search on focal height, maximising sharpness.
+
+        Sharpness is PyLabRobot's ``evaluate_focus_nvmg_sobel`` (normalised
+        variance of Sobel gradient magnitude over the centre of the frame).
+        Golden section costs one acquisition per iteration instead of two,
+        which matters when each frame is a real exposure on live cells.
+        """
+
+        from pylabrobot.plate_reading.imager import (  # type: ignore[import-not-found]
+            evaluate_focus_nvmg_sobel,
+        )
+
+        invphi = (5**0.5 - 1) / 2
+        a, b = low_mm, high_mm
+        c, d = b - invphi * (b - a), a + invphi * (b - a)
+        fc = evaluate_focus_nvmg_sobel(await self._acquire_at(c, exposure_ms))
+        fd = evaluate_focus_nvmg_sobel(await self._acquire_at(d, exposure_ms))
+        for _ in range(self._AUTO_ROUNDS):
+            if abs(b - a) < self._FOCUS_TOLERANCE_MM:
+                break
+            if fc > fd:
+                b, d, fd = d, c, fc
+                c = b - invphi * (b - a)
+                fc = evaluate_focus_nvmg_sobel(await self._acquire_at(c, exposure_ms))
+            else:
+                a, c, fc = c, d, fd
+                d = a + invphi * (b - a)
+                fd = evaluate_focus_nvmg_sobel(await self._acquire_at(d, exposure_ms))
+        best = c if fc > fd else d
+        tuning["autofocus"] = {
+            "focal_height_mm": round(best, 4),
+            "sharpness": round(float(max(fc, fd)), 6),
+        }
+        return best
 
     def _resolve_channel(self, channel: str) -> Any:
         from pylabrobot.plate_reading.standard import ImagingMode  # type: ignore[import-not-found]
@@ -812,19 +1090,23 @@ class StubCytationReader:
 
     def __init__(self) -> None:
         self._connected = False
-        self._setpoint_c = 37.0
-        self._actual_c = 22.0  # ambient until "warmed up"
+        self._setpoint_c: float | None = None
+        self._actual_c = 22.0  # ambient until a setpoint is applied
         self._drawer = "in"
+        self._shaking = False
         self.imaging_enabled = bool(_config.get("imaging", "enabled", True))
         self._plate: str | None = None
         self._plate_model: str | None = None
 
     async def setup(self) -> None:
         self._connected = True
-        self._actual_c = self._setpoint_c
+        # Sits at ambient until a setpoint is applied, matching a real
+        # incubator that is not heating on connect.
+        self._actual_c = 22.0
 
     async def stop(self) -> None:
         self._connected = False
+        self._shaking = False
 
     def is_connected(self) -> bool:
         return self._connected
@@ -854,6 +1136,55 @@ class StubCytationReader:
             "objective_slots": 6,
             "filter_slots": 4,
         }
+
+    def firmware_version(self) -> str | None:
+        return "3.10-stub"
+
+    def serial_number(self) -> str | None:
+        return "STUB0000"
+
+    def supports_phase_contrast(self) -> bool | None:
+        return True
+
+    # ---- incubator ---------------------------------------------------
+
+    def temperature_range(self) -> tuple[float | None, float | None]:
+        return (4.0, 45.0)
+
+    async def set_temperature(self, celsius: float) -> None:
+        self._require_connected()
+        lo, hi = self.temperature_range()
+        if not (lo <= celsius <= hi):
+            raise ValueError(
+                f"Requested temperature {celsius}°C is outside {lo}-{hi}°C"
+            )
+        self._setpoint_c = celsius
+        # The stub reaches setpoint instantly; a real incubator ramps.
+        self._actual_c = celsius
+
+    async def stop_temperature_control(self) -> None:
+        self._require_connected()
+        self._setpoint_c = None
+        self._actual_c = 22.0
+
+    # ---- shaker ------------------------------------------------------
+
+    def is_shaking(self) -> bool:
+        return self._shaking
+
+    async def shake(self, *, pattern: str = "orbital", displacement_mm: int = 3) -> None:
+        self._require_connected()
+        if pattern.strip().lower() not in {"linear", "orbital"}:
+            raise ValueError(
+                f"Unknown shake pattern {pattern!r}. Known: linear, orbital"
+            )
+        if not 1 <= displacement_mm <= 6:
+            raise ValueError("displacement_mm must be between 1 and 6")
+        self._shaking = True
+
+    async def stop_shaking(self) -> None:
+        self._require_connected()
+        self._shaking = False
 
     def has_plate(self) -> bool:
         return self._plate is not None
@@ -976,11 +1307,29 @@ class StubCytationReader:
         gain: float = 1.0,
         objective: str | None = None,
         led_intensity: int = 10,
+        autofocus: bool = False,
+        auto_exposure: bool = False,
+        **_ignored: Any,
     ) -> dict[str, Any]:
         self._require_connected()
         self._require_plate()
         self._check_wells([well])
         self._check_channel(channel)
+        tuning: dict[str, Any] = {}
+        if auto_exposure:
+            # Deterministic stand-in for the search, so a caller can see that
+            # the resolved value differs from what it asked for.
+            exposure_ms = 12.5
+            tuning["auto_exposure"] = {
+                "exposure_ms": exposure_ms,
+                "target_peak_fraction": 0.8,
+            }
+        if autofocus:
+            focal_height_mm = 8.25
+            tuning["autofocus"] = {
+                "focal_height_mm": focal_height_mm,
+                "sharpness": 1.0,
+            }
         return {
             "well": well,
             "channel": channel,
@@ -989,6 +1338,7 @@ class StubCytationReader:
             "exposure_ms": exposure_ms,
             "gain": gain,
             "synthetic": True,
+            **({"tuning": tuning} if tuning else {}),
             # Stub never writes a real image; the orchestrator gets a
             # data: URI placeholder instead so end-to-end tests can run
             # without touching the filesystem.

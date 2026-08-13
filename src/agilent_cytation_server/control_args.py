@@ -8,7 +8,7 @@ graduates them to a shared package).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -98,6 +98,27 @@ class ReadResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Incubator + shaker
+# ---------------------------------------------------------------------------
+
+
+class TemperatureArgs(_StrictArgs):
+    # Bounds are the driver's (4-45 C). Note the driver assumes every Cytation
+    # can cool, which is what produces the 4 C floor — a low setpoint may be
+    # accepted and then ignored by a unit with no cooling fitted.
+    celsius: float = Field(..., ge=4.0, le=45.0)
+
+
+class ShakeArgs(_StrictArgs):
+    pattern: Literal["orbital", "linear"] = "orbital"
+    # PyLabRobot calls this `frequency`, but it is the orbit displacement in
+    # mm and runs *inversely* to speed: 6 mm is ~360 CPM, 1 mm is ~1096 CPM.
+    # Renamed here so a caller cannot read it as "shake faster with a bigger
+    # number".
+    displacement_mm: int = Field(default=3, ge=1, le=6)
+
+
+# ---------------------------------------------------------------------------
 # Imaging
 # ---------------------------------------------------------------------------
 
@@ -125,6 +146,20 @@ class ImagingCaptureArgs(_StrictArgs):
         ),
     )
     led_intensity: int = Field(default=10, ge=1, le=10)
+    autofocus: bool = Field(
+        default=False,
+        description=(
+            "Search focal height for maximum sharpness before capturing. "
+            "Costs extra exposures on the sample."
+        ),
+    )
+    auto_exposure: bool = Field(
+        default=False,
+        description=(
+            "Search exposure until the peak pixel sits near 80% of full "
+            "scale. Costs extra exposures on the sample."
+        ),
+    )
 
 
 class ImagingCaptureResponse(BaseModel):
@@ -148,4 +183,6 @@ __all__ = [
     "ReadResponse",
     "ImagingCaptureArgs",
     "ImagingCaptureResponse",
+    "ShakeArgs",
+    "TemperatureArgs",
 ]

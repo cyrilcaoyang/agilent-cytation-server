@@ -69,6 +69,10 @@ _READBACK_TTL_S = 3.0
 # which is the whole point of the field. On timeout we serve the stale cache.
 _READBACK_LOCK_WAIT_S = 0.05
 
+# How close the readback must sit to the commanded setpoint before the
+# incubator is called `at_setpoint` rather than `heating` / `cooling`.
+_TEMPERATURE_TOLERANCE_C = 0.5
+
 
 class CytationService:
     """Wraps a :class:`CytationReader` (or :class:`StubCytationReader`)
@@ -99,6 +103,11 @@ class CytationService:
         self._last_error: ErrorInfo | None = None
         self._busy_state: bool = False
         self._drawer: str = "unknown"
+        # Commanded incubator setpoint, or None when temperature control is
+        # off. Tracked here because the instrument reports only the measured
+        # temperature, and "22 C" means something entirely different with a
+        # setpoint of 22 than with the incubator idle.
+        self._setpoint_c: float | None = None
         self._last_read_at: float | None = None  # time.monotonic()
         self._read_count: int = 0
         # Reserved monotonic counter (§2.3.1). Reads and captures routinely
@@ -170,6 +179,15 @@ class CytationService:
                 self._last_error = None
                 # Reader assumes drawer is in unless it tells us otherwise.
                 self._drawer = "in"
+                # `equipment_version` was null on every envelope because
+                # nothing ever filled it. The instrument knows its own
+                # firmware revision, so prefer that over silence — but let an
+                # explicit config value win, since a deployment may want to
+                # report the service version instead.
+                if not _config.get("dashboard", "equipment_version", None):
+                    probe = getattr(self._reader, "firmware_version", None)
+                    if probe is not None:
+                        self.equipment_version = probe() or self.equipment_version
             except Exception as exc:
                 self._record_error(exc, "startup")
                 raise
@@ -294,6 +312,10 @@ class CytationService:
         if actual_temp is not None:
             metrics["actual_temperature"] = MetricValue(
                 value=float(actual_temp), unit="C", timestamp=now
+            )
+        if self._setpoint_c is not None:
+            metrics["setpoint_temperature"] = MetricValue(
+                value=float(self._setpoint_c), unit="C", timestamp=now
             )
 
         if self._last_read_at is not None:
@@ -490,6 +512,63 @@ class CytationService:
                 self._last_read_at = time.monotonic()
                 return result
 
+    # ------------------------------------------------------------------
+    # Incubator + shaker
+    # ------------------------------------------------------------------
+
+    async def set_temperature(self, celsius: float) -> None:
+        async with self._lock:
+            self._require_connected()
+            async with self._operation("incubator.set_temperature"):
+                await self._reader.set_temperature(celsius)
+                self._setpoint_c = celsius
+                # The cached readback describes the pre-setpoint instrument;
+                # force the next poll to go and look.
+                self._readings_at = None
+
+    async def stop_temperature_control(self) -> None:
+        async with self._lock:
+            self._require_connected()
+            async with self._operation("incubator.stop"):
+                await self._reader.stop_temperature_control()
+                self._setpoint_c = None
+                self._readings_at = None
+
+    async def shake(self, *, pattern: str = "orbital", displacement_mm: int = 3) -> None:
+        """Start shaking. Returns once motion has begun, not when it ends.
+
+        Shaking is not bracketed by ``_operation``: the driver's shake runs as
+        a background task that outlives this call, so an activity span opened
+        and closed here would report `running` for a few milliseconds and
+        `idle` for the minutes the plate is actually moving. Activity is
+        observed from the driver's own flag instead — see
+        :meth:`_observed_activity`.
+        """
+
+        async with self._lock:
+            self._require_connected()
+            try:
+                await self._reader.shake(
+                    pattern=pattern, displacement_mm=displacement_mm
+                )
+            except (PreconditionNotMet, ValueError) as exc:
+                logger.info("Cytation refused shake.start: %s", exc)
+                raise
+            except Exception as exc:
+                self._record_error(exc, "shake.start")
+                raise
+            self._note_activity(self._observed_activity())
+
+    async def stop_shaking(self) -> None:
+        async with self._lock:
+            self._require_connected()
+            try:
+                await self._reader.stop_shaking()
+            except Exception as exc:
+                self._record_error(exc, "shake.stop")
+                raise
+            self._note_activity(self._observed_activity())
+
     async def capture_image(
         self,
         *,
@@ -500,6 +579,8 @@ class CytationService:
         gain: float = 1.0,
         objective: str | None = None,
         led_intensity: int = 10,
+        autofocus: bool = False,
+        auto_exposure: bool = False,
     ) -> dict[str, Any]:
         async with self._lock:
             self._require_connected()
@@ -516,6 +597,8 @@ class CytationService:
                     gain=gain,
                     objective=objective,
                     led_intensity=led_intensity,
+                    autofocus=autofocus,
+                    auto_exposure=auto_exposure,
                 )
 
     # ------------------------------------------------------------------
@@ -534,9 +617,45 @@ class CytationService:
         A drawer move also reports ``running``: the instrument is executing a
         commanded operation and cannot start a read until it finishes. Drawer
         moves are not counted in ``cycles_total`` — see the README table.
+
+        **Shaking also counts**, and is observed from the driver's own flag
+        rather than from a span we open. The shake command returns as soon as
+        motion starts and a background task keeps it going, so the plate is
+        moving long after the request completed — bracketing it would report
+        milliseconds of `running` for minutes of motion. Holding a temperature
+        setpoint deliberately does *not* count: that is a maintained
+        condition, not an operation in progress.
         """
 
-        return "running" if self._busy_state else "idle"
+        if self._busy_state:
+            return "running"
+        probe = getattr(self._reader, "is_shaking", None) if self._reader else None
+        if probe is not None:
+            try:
+                if probe():
+                    return "running"
+            except Exception:  # pragma: no cover - defensive
+                pass
+        return "idle"
+
+    def _temperature_range(self) -> tuple[float | None, float | None]:
+        probe = getattr(self._reader, "temperature_range", None) if self._reader else None
+        if probe is None:
+            return (None, None)
+        try:
+            lo, hi = probe()
+            return (lo, hi)
+        except Exception:  # pragma: no cover - defensive
+            return (None, None)
+
+    def _is_shaking(self) -> bool:
+        probe = getattr(self._reader, "is_shaking", None) if self._reader else None
+        if probe is None:
+            return False
+        try:
+            return bool(probe())
+        except Exception:  # pragma: no cover - defensive
+            return False
 
     def _note_activity(self, activity: str) -> None:
         """Record an observed activity, stamping ``activity_since`` only when
@@ -618,6 +737,7 @@ class CytationService:
             "optics": ComponentStatus(connected=False, state="disconnected"),
             "incubator": ComponentStatus(connected=False, state="disconnected"),
             "plate_stage": ComponentStatus(connected=False, state="unknown"),
+            "shaker": ComponentStatus(connected=False, state="disconnected"),
         }
         if self.imaging_enabled:
             comps["imaging"] = ComponentStatus(connected=False, state="disconnected")
@@ -627,16 +747,33 @@ class CytationService:
         self, actual_temp: float | None
     ) -> dict[str, ComponentStatus]:
         optics_state = "busy" if self._busy_state else "idle"
-        if actual_temp is None:
+        # Keyed on the setpoint we commanded rather than on a bare temperature
+        # threshold. The old `actual >= 30 -> at_setpoint` heuristic called a
+        # warm room "at setpoint" with the incubator off, and could never
+        # report "ramping".
+        incubator_message: str | None = None
+        if self._setpoint_c is None:
+            incubator_state = "off"
+        elif actual_temp is None:
             incubator_state = "unknown"
-        elif actual_temp >= 30.0:  # Cytation incubator default range; arbitrary
+            incubator_message = "Temperature readback unavailable"
+        elif abs(actual_temp - self._setpoint_c) <= _TEMPERATURE_TOLERANCE_C:
             incubator_state = "at_setpoint"
         else:
-            incubator_state = "off"
+            incubator_state = (
+                "heating" if actual_temp < self._setpoint_c else "cooling"
+            )
+            incubator_message = f"Ramping to {self._setpoint_c} C"
+
         comps: dict[str, ComponentStatus] = {
             "optics": ComponentStatus(connected=True, state=optics_state),
-            "incubator": ComponentStatus(connected=True, state=incubator_state),
+            "incubator": ComponentStatus(
+                connected=True, state=incubator_state, message=incubator_message
+            ),
             "plate_stage": ComponentStatus(connected=True, state=self._drawer),
+            "shaker": ComponentStatus(
+                connected=True, state="shaking" if self._is_shaking() else "idle"
+            ),
         }
         if self.imaging_enabled:
             # `connected` tracks the camera, not the config flag. Reporting a
@@ -734,7 +871,26 @@ class CytationService:
                     )
                 except Exception:  # pragma: no cover - defensive
                     pass
+            # The driver refuses phase contrast on Cytation1 firmware, so
+            # whether that channel exists is a property of this unit, not of
+            # the request. `null` means the firmware version is unknown.
+            phase = getattr(self._reader, "supports_phase_contrast", None)
+            if phase is not None:
+                try:
+                    imaging["phase_contrast_available"] = phase()
+                except Exception:  # pragma: no cover - defensive
+                    pass
             details["imaging"] = imaging
+
+        serial = getattr(self._reader, "serial_number", None) if self._reader else None
+        if serial is not None:
+            try:
+                details["instrument_serial"] = serial()
+            except Exception:  # pragma: no cover - defensive
+                pass
+        lo, hi = self._temperature_range()
+        if lo is not None or hi is not None:
+            details["temperature_range_c"] = {"min": lo, "max": hi}
         return details
 
     def _allowed_actions(self, state: str, activity: str = "idle") -> list[str]:
@@ -754,7 +910,11 @@ class CytationService:
         """
         always = ["claim", "heartbeat", "release"]
         if activity == "running":
-            return [*always]
+            # §2.3 is explicit that abort/stop stay available while running.
+            # Shaking made this urgent rather than academic: it outlives the
+            # request that started it, so without `shake.stop` here the only
+            # documented way to stop the plate moving would be `shutdown`.
+            return [*always, *(["shake.stop"] if self._is_shaking() else [])]
         if state == "requires_init":
             return [*always, "startup"]
         if state == "dry_run" or state == "ready":
@@ -775,6 +935,9 @@ class CytationService:
                 "plate.load",
                 "plate.unload",
                 "well.update",
+                "incubator.set_temperature",
+                "incubator.stop",
+                "shake.start",
                 *(
                     [
                         "read.absorbance",

@@ -17,7 +17,14 @@ PyLabRobot-backed Python driver and REST API service for the **BioTek (Agilent) 
 
 `equipment_status` answers *is this reader healthy and fit to run*; `activity` answers *is it working right now*. They are independent, and each is derived from its own observation — `activity` comes from the in-flight-operation flag the control methods set, never from `equipment_status` (which §2.3 forbids, since it would add no information).
 
-**Primary operation** is a **measurement** (absorbance / fluorescence / luminescence) or an **image capture**. A drawer move also reports `activity: "running"` — the instrument is executing a commanded operation and cannot start a read until it finishes — but is *not* counted in `cycles_total`, which counts measurements and captures only.
+**Primary operation** is a **measurement** (absorbance / fluorescence / luminescence) or an **image capture**. A drawer move and **shaking** also report `activity: "running"` — the instrument is executing a commanded operation and cannot start a read until it finishes — but neither is counted in `cycles_total`, which counts measurements and captures only.
+
+Shaking is observed from the driver's own flag rather than from a span the
+service opens, because the shake command returns as soon as motion starts and a
+background task keeps the plate moving: bracketing the request would report
+milliseconds of `running` for minutes of motion. Holding a temperature setpoint
+deliberately does **not** count as activity — that is a maintained condition,
+not an operation in progress, and `components.incubator` is where it shows up.
 
 | Situation | `equipment_status` | `activity` | `cycles_total` |
 |---|---|---|---|
@@ -143,7 +150,11 @@ v1.1 control verbs (all require `X-Claim-Token` when `[service].enforce_claims =
 | POST | `/control/read/absorbance` | `{wells, wavelength_nm}` — 230–999 nm |
 | POST | `/control/read/fluorescence` | `{wells, excitation_nm, emission_nm, focal_height_mm?}` — ex/em 250–700 nm |
 | POST | `/control/read/luminescence` | `{wells, focal_height_mm?, integration_time_s?}` |
-| POST | `/control/imaging/capture` | `{well, channel, objective?, focal_height_mm?, exposure_ms?, gain?, led_intensity?}` |
+| POST | `/control/imaging/capture` | `{well, channel, objective?, focal_height_mm?, exposure_ms?, gain?, led_intensity?, autofocus?, auto_exposure?}` |
+| POST | `/control/incubator/set_temperature` | `{celsius}` — 4–45 °C |
+| POST | `/control/incubator/stop` | — ends temperature control |
+| POST | `/control/shake/start` | `{pattern?, displacement_mm?}` |
+| POST | `/control/shake/stop` | — |
 
 Bounds mirror what PyLabRobot's BioTek backend enforces itself, so an
 out-of-range request is a 422 naming the field rather than a 500 from inside
@@ -184,13 +195,60 @@ queried from the instrument's own configuration. As of 2026-08-12 on
 | Fluorescence intensity reads, ex/em 250–700 nm | ✅ available | nothing |
 | Luminescence | ✅ available | nothing |
 | Brightfield imaging (bottom-up) | ✅ **verified live** 2026-08-12 | nothing |
-| Phase-contrast imaging | likely — all 3 objectives are `PL_FL_Phase` | phase annulus in the condenser; untested |
+| Autofocus / auto-exposure on capture | ✅ available | nothing |
+| Incubation, 4–45 °C | ✅ **verified live** 2026-08-12 | nothing |
+| Shaking (linear / orbital) | ✅ **verified live** 2026-08-12 | nothing — but see the ceiling below |
+| Phase-contrast imaging | ✅ driver permits it (firmware 2.09) | phase annulus in the condenser; not yet imaged |
 | Fluorescence imaging (DAPI/GFP/RFP/Cy5…) | ❌ **blocked** | ≥1 filter cube — the wheel reports **4 slots, all empty** |
 | Absorbance/fluorescence **spectral scans** | ❌ not available | upstream work; PyLabRobot has no spectrum method |
+| Fluorescence polarization | ❌ not available | no FP method on the BioTek backend |
+| Polarized-light imaging | ❌ not available | no polarizer in the driver's command set |
 
 Objective turret: 6 slots, 3 fitted — `O_4X_PL_FL_Phase`, `O_20X_PL_FL_Phase`,
 `O_40X_PL_FL_Phase`. Camera: FLIR Chameleon3 `CM3-U3-50S5M`, 2448×2048 mono
-(so `color_brightfield` is not usable on this unit).
+(so `color_brightfield` is not usable on this unit). Firmware 2.09, instrument
+serial 23030927 — the firmware revision matters because the driver refuses
+phase contrast on Cytation1, which it identifies by a version starting with
+"1"; `details.imaging.phase_contrast_available` reports the verdict.
+
+### Shaking: know the ceiling before you rely on it
+
+The instrument takes shake duration as a parameter with a **16-minute
+maximum**, so PyLabRobot fakes continuous shaking with a background task that
+re-issues the command each time it lapses — and warns in its own docstring
+that the door may briefly open at each boundary. Good for a mix before a read;
+not something to leave running unattended.
+
+Two consequences the service enforces:
+
+- **Reads and captures are withheld while shaking.** Partly because reading a
+  moving plate is meaningless, but mainly because `send_command` has no
+  internal lock: the shake task talks to the instrument on its own schedule,
+  so a concurrent read would interleave writes on the serial link and corrupt
+  both exchanges. `/status` also stops refreshing its temperature readback
+  while shaking, for the same reason — `details.readback_age_s` shows the
+  cache going stale.
+- **`shake.stop` stays in `allowed_actions` while shaking**, per §2.3. Motion
+  outlives the request that started it, so without that the only documented
+  way to stop the plate would be `shutdown`.
+
+`displacement_mm` (1–6) is PyLabRobot's `frequency` argument renamed, because
+it is not a frequency: it is orbit displacement in mm and runs *inversely* to
+speed — 6 mm ≈ 360 CPM, 1 mm ≈ 1096 CPM.
+
+### Autofocus and auto-exposure
+
+`autofocus` runs a golden-section search on focal height maximising PyLabRobot's
+Sobel-gradient sharpness metric; `auto_exposure` binary-searches exposure until
+the peak pixel sits near 80 % of full scale. Both cost extra exposures on the
+sample — a photobleaching budget as much as a time one — so each is capped at 8
+rounds. The response echoes the **resolved** `focal_height_mm` and
+`exposure_ms`, with the search detail under `details.tuning`.
+
+Auto-exposure deliberately uses PyLabRobot's `max_pixel_at_fraction` rather than
+its `fraction_overexposed`: the latter counts pixels strictly greater than 255
+in a uint8 array, which is never satisfiable, so it drives exposure upward until
+the frame clips.
 
 ### Quick check
 

@@ -1,6 +1,6 @@
 {
   "activity": "running",
-  "activity_since": "2026-08-12T15:20:50.725555Z",
+  "activity_since": "2026-08-13T00:50:00.031532Z",
   "allowed_actions": [
     "claim",
     "heartbeat",
@@ -17,7 +17,7 @@
       "connected": true,
       "last_event_at": null,
       "message": null,
-      "state": "at_setpoint"
+      "state": "off"
     },
     "optics": {
       "connected": true,
@@ -30,6 +30,12 @@
       "last_event_at": null,
       "message": null,
       "state": "in"
+    },
+    "shaker": {
+      "connected": true,
+      "last_event_at": null,
+      "message": null,
+      "state": "idle"
     }
   },
   "details": {
@@ -50,19 +56,25 @@
         "O_4X_PL_FL",
         "O_20X_PL_FL"
       ],
-      "objective_slots": 6
+      "objective_slots": 6,
+      "phase_contrast_available": true
     },
     "imaging_enabled": true,
+    "instrument_serial": "STUB0000",
     "loaded_plate": null,
     "plate_in_reader": false,
-    "readback_age_s": 0.016
+    "readback_age_s": 0.0,
+    "temperature_range_c": {
+      "max": 45.0,
+      "min": 4.0
+    }
   },
   "device_time": "2026-04-29T22:50:01Z",
   "equipment_id": "cytation_5",
   "equipment_kind": "plate_reader",
   "equipment_name": "BioTek Cytation 5",
   "equipment_status": "busy",
-  "equipment_version": null,
+  "equipment_version": "3.10-stub",
   "host": "cytation-pc",
   "last_error": null,
   "message": "Plate reader operation in progress",
@@ -70,7 +82,7 @@
     "actual_temperature": {
       "timestamp": "2026-04-29T22:50:01Z",
       "unit": "C",
-      "value": 37.0
+      "value": 22.0
     },
     "cycles_total": {
       "timestamp": null,

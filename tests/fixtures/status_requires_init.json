@@ -1,6 +1,6 @@
 {
   "activity": "idle",
-  "activity_since": "2026-08-12T15:20:50.688501Z",
+  "activity_since": "2026-08-13T00:49:59.984658Z",
   "allowed_actions": [
     "claim",
     "heartbeat",
@@ -31,6 +31,12 @@
       "last_event_at": null,
       "message": null,
       "state": "unknown"
+    },
+    "shaker": {
+      "connected": false,
+      "last_event_at": null,
+      "message": null,
+      "state": "disconnected"
     }
   },
   "details": {
@@ -51,7 +57,7 @@
   "equipment_kind": "plate_reader",
   "equipment_name": "BioTek Cytation 5",
   "equipment_status": "requires_init",
-  "equipment_version": null,
+  "equipment_version": "3.10-stub",
   "host": "cytation-pc",
   "last_error": null,
   "message": "Driver not connected. POST /control/startup to initialise the reader.",

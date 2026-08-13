@@ -60,6 +60,8 @@ from .control_args import (
     LuminescenceArgs,
     PlateLoadArgs,
     ReadResponse,
+    ShakeArgs,
+    TemperatureArgs,
     WellUpdateArgs,
 )
 from .models import (
@@ -445,6 +447,56 @@ def create_app(
             raise _wrap_runtime(exc) from exc
         return ReadResponse(wells=wells)
 
+    # ---- incubator + shaker -----------------------------------------
+
+    @app.post("/control/incubator/set_temperature", tags=["control"])
+    async def control_set_temperature(
+        body: TemperatureArgs,
+        x_claim_token: str | None = Header(default=None, alias="X-Claim-Token"),
+    ) -> Response:
+        _enforce_claim(x_claim_token)
+        try:
+            await service.set_temperature(body.celsius)
+        except Exception as exc:
+            raise _wrap_runtime(exc) from exc
+        return Response(status_code=http_status.HTTP_204_NO_CONTENT)
+
+    @app.post("/control/incubator/stop", tags=["control"])
+    async def control_stop_temperature(
+        x_claim_token: str | None = Header(default=None, alias="X-Claim-Token"),
+    ) -> Response:
+        _enforce_claim(x_claim_token)
+        try:
+            await service.stop_temperature_control()
+        except Exception as exc:
+            raise _wrap_runtime(exc) from exc
+        return Response(status_code=http_status.HTTP_204_NO_CONTENT)
+
+    @app.post("/control/shake/start", tags=["control"])
+    async def control_shake_start(
+        body: ShakeArgs,
+        x_claim_token: str | None = Header(default=None, alias="X-Claim-Token"),
+    ) -> Response:
+        _enforce_claim(x_claim_token)
+        try:
+            await service.shake(
+                pattern=body.pattern, displacement_mm=body.displacement_mm
+            )
+        except Exception as exc:
+            raise _wrap_runtime(exc) from exc
+        return Response(status_code=http_status.HTTP_204_NO_CONTENT)
+
+    @app.post("/control/shake/stop", tags=["control"])
+    async def control_shake_stop(
+        x_claim_token: str | None = Header(default=None, alias="X-Claim-Token"),
+    ) -> Response:
+        _enforce_claim(x_claim_token)
+        try:
+            await service.stop_shaking()
+        except Exception as exc:
+            raise _wrap_runtime(exc) from exc
+        return Response(status_code=http_status.HTTP_204_NO_CONTENT)
+
     # ---- imaging ----------------------------------------------------
 
     @app.post(
@@ -466,18 +518,22 @@ def create_app(
                 gain=body.gain,
                 objective=body.objective,
                 led_intensity=body.led_intensity,
+                autofocus=body.autofocus,
+                auto_exposure=body.auto_exposure,
             )
         except Exception as exc:
             raise _wrap_runtime(exc) from exc
-        # The channel/objective echoed back are the *resolved* ones, so a
-        # caller who passed "uv" or omitted the objective learns what the
-        # instrument actually used.
+        # Everything echoed back is the *resolved* value, not the request's.
+        # A caller who passed "uv", omitted the objective, or asked for
+        # autofocus needs to learn what the instrument actually used —
+        # otherwise the focal height and exposure in the response would be
+        # the ones the search discarded.
         promoted = {"well", "channel", "focal_height_mm", "exposure_ms", "gain", "objective"}
         return ImagingCaptureResponse(
             well=body.well,
             channel=str(payload.get("channel", body.channel)),
-            focal_height_mm=body.focal_height_mm,
-            exposure_ms=body.exposure_ms,
+            focal_height_mm=float(payload.get("focal_height_mm", body.focal_height_mm)),
+            exposure_ms=float(payload.get("exposure_ms", body.exposure_ms)),
             gain=body.gain,
             objective=payload.get("objective"),
             image_path=payload.get("image_path"),
