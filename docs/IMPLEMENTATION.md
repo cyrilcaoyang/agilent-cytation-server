@@ -149,11 +149,19 @@ Both were verified empty on 2026-08-12 (30 °C → `heating` / "Ramping to
   `components.incubator.state` flips from `heating` to `at_setpoint`. Time it.
   If it never arrives, the tolerance band is `_TEMPERATURE_TOLERANCE_C = 0.5`
   in `service.py`.
-- **Does cooling work?** The driver hardcodes `supports_cooling = True` for
-  every Cytation, which is where the 4 °C floor comes from. Active cooling is
-  not fitted on every unit. Set something below ambient and see whether the
-  reading actually falls — if it does not, that is a driver claim your unit
-  does not honour, and worth recording.
+- **Does cooling work? Probably not — and the range is wrong at both ends.**
+  The driver hardcodes `supports_cooling = True` and clamps to an absolute
+  4–45 °C. The Cytation 5 spec sheet gives the incubator as **4 °C above
+  ambient → 65 °C**, i.e. heating-only, which makes PyLabRobot's "4 °C" look
+  like an absolute-vs-relative misreading and its 45 °C ceiling ~20 °C short
+  of the instrument. Two things to settle at the bench:
+  - set something below ambient and see whether the reading actually falls
+    (expect: no);
+  - note that 50 °C is currently **refused with a 422** by our arg model even
+    though the instrument supports it. If you need above 45 °C, that bound
+    lives in `control_args.py::TemperatureArgs` and in the driver — widening
+    ours alone is not enough, since `set_temperature` re-checks the driver's
+    `temperature_range`.
 - **Shaking with liquid in the wells.** Empty shaking proves the command
   works; it says nothing about splashing at a given displacement. Start at
   `displacement_mm: 3` and watch before trusting 1 (which is the *fastest*

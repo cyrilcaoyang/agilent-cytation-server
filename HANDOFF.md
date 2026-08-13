@@ -1,156 +1,94 @@
-# Overnight handoff — Phases 2, 3, 4 of the Cytation roadmap
+# Handoff — current state
 
-Three commits land in this batch, in order:
+**Last updated 2026-08-12.** If you are picking this repo up cold, read this
+first, then [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) for what still
+needs bench time and [`RUNBOOK.md`](RUNBOOK.md) for day-to-day operations.
 
-| Commit | Phase | What it does |
-|---|---|---|
-| `615e783` | **2** | Per-well sample tracking via `PlateStateStore` (JSON-backed). Surfaced under `details.loaded_plate` on `/status`. |
-| `ad189a3` | **3** | STATUS_SPEC v1.1 — cooperative claim protocol + full `/control/*` write surface. `protocol_version` bumped to `1.1`. |
-| *(this commit)* | **4** | Skill catalog draft + handoff doc at `docs/LABSKILLS.md`. The catalog itself cannot be applied from this PC because `ac-organic-lab/` is a read-only mirror per `~/Projects/CLAUDE.md`. |
+This file is a *status* document. It gets rewritten, not appended to — an
+earlier version described an overnight batch whose every claim ("68/68 tests",
+"hardware not touched", "do not flip protocol yet") had become false, which is
+worse than no handoff at all.
 
-Test suite: **68/68 passing** in `dry_run`. Hardware was **not** touched
-overnight — all verification is local stub-only.
+## Where things stand
 
-## What's safe right now
+The service is deployed on `sdl2-pc-03-cytation` as the NSSM service
+`cytation`, port 8040, reporting STATUS_SPEC **v1.2** against real hardware.
+106 tests pass. The Cytation's FTDI chip is bound to **libusbK**, so Gen5 and
+`biotek_driver` cannot reach the reader until you swap back (RUNBOOK §5).
 
-You can keep using the service exactly as it stood at commit `34c6277`
-(real-hardware "ready"). The new `/control/*` endpoints are
-additive — the existing read surface (`/`, `/health`, `/status`) is
-backward-compatible at the JSON level apart from the `protocol_version`
-field flipping from `"1.0"` to `"1.1"`.
+| Subsystem | State |
+|---|---|
+| Reader connection, drawer, plate tracking | working |
+| Imaging — brightfield | **verified through REST** on hardware |
+| Imaging — autofocus / auto-exposure | implemented, never run on a real subject |
+| Imaging — phase contrast | driver permits it (firmware 2.09), never imaged |
+| Imaging — fluorescence | **blocked**: 4 filter-cube slots, all empty |
+| Incubator | verified to ramp; never confirmed to reach setpoint |
+| Shaker | verified empty; never with liquid |
+| Reads (absorbance / fluorescence / luminescence) | **never completed on hardware** |
 
-## What needs your attention in the morning
+The read path is the one significant gap. The call now reaches the instrument
+with correct arguments, but on an empty carrier the driver's acknowledgement
+assertion fails, so it needs a plate and a person. That is what
+`docs/IMPLEMENTATION.md` exists for.
 
-### 1) Restore the production venv
+## Two things that will bite you
 
-`uv sync --extra dev` (run during testing) **removed** pylabrobot,
-pyusb, libusb-package, pylibftdi, spinnaker_python from the venv. Before
-the next driver swap to libusbK or any hardware boot:
+**The live service runs from a branch.** The venv holds an editable install
+pointing at the working tree, so whatever is checked out *is* what executes.
+The deployed code is `fix/optical-write-surface`; checking out `main` on that
+PC silently reverts the reader to a broken imaging path with no error. Merge
+the PR, or leave the checkout alone.
+
+**PySpin is not in the lockfile and `uv run` deletes it.** FLIR does not
+publish to PyPI, so the wheel is installed out-of-band and any plain `uv run`
+prunes it — which is how this deployment lost its camera between 2026-05-21
+and 2026-08-12 without anyone noticing. The NSSM service therefore runs
+`uv run --no-sync`. If you rebuild the venv, re-install the wheel and check:
 
 ```powershell
-cd C:\Users\sdl2\Projects\agilent-cytation-server
-C:\SDL_Tools\uv.exe sync --extra api --extra plr --extra windows
+C:\SDL_Tools\uv.exe run --no-sync python -c "import PySpin; print('PySpin OK')"
 ```
 
-Then re-install spinnaker_python from the wheel per `RUNBOOK.md` §3.1
-step 4 and re-pin `numpy<2`. The libftdi DLLs in `.venv\Scripts\` were
-copied per §3.2 — `uv sync` does **not** touch those files, but verify
-they're still present.
+A missing PySpin is not silent any more: `/status` reports
+`components.imaging.connected: false` with the reason in
+`details.imaging.camera_error`, and captures return 412 `camera_not_ready`
+instead of a 500.
 
-### 2) Hardware verification before flipping `protocol: "1.1"`
+## Still to do
 
-The dashboard's `equipment.yaml` still says `protocol: "1.0"` and
-`do_not_call_connect: true`. **Do not flip it yet.** The order is:
+1. **Bench-verify the reads** — [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
+2. **Apply the skill-catalog patch** — [`docs/LABSKILLS.md`](docs/LABSKILLS.md).
+   It can go in from this PC (the `ac-organic-lab/` checkout shares the central
+   server's remote) or from the central server. Sequenced *after* step 1, because
+   removing `do_not_call_connect` is what lets the SDK start issuing real
+   `/control/*` calls.
+3. **Decide on filter cubes** if fluorescence imaging matters. Nothing in
+   software unblocks it.
+4. **Watch pylabrobot v1** — PR #1000 restructures the machine interfaces and
+   touches `biotek_backend.py`; a `CytationMicroscopyBackend` on a side branch
+   suggests reader and imager split apart. Unreleased; we pin 0.2.1.
 
-1. Restore the venv (step 1 above).
-2. Run the driver-swap procedure in `RUNBOOK.md` §3-§4 (FTDI → libusbK)
-   so the real Cytation is reachable from PyLabRobot.
-3. Restart `cytation` service: `nssm restart cytation`.
-4. With the service in real-hardware mode, smoke-test the new endpoints:
-
-   ```powershell
-   # Claim the device
-   $claim = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9333/control/claim `
-       -ContentType application/json `
-       -Body (@{owner="manual-test"; session_id=[guid]::NewGuid().ToString()} | ConvertTo-Json)
-
-   $headers = @{ "X-Claim-Token" = $claim.claim_token }
-
-   # Drawer open / close
-   Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9333/control/drawer/open -Headers $headers -ContentType application/json -Body "{}"
-   Start-Sleep -Seconds 5
-   Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9333/control/drawer/close -Headers $headers -ContentType application/json -Body "{}"
-
-   # Single-well absorbance read at 600 nm
-   Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9333/control/read/absorbance `
-       -Headers $headers -ContentType application/json `
-       -Body (@{wells=@("A1"); wavelength_nm=600} | ConvertTo-Json)
-
-   # Release
-   Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9333/control/release -Headers $headers
-   ```
-
-5. Check `C:\SDL_Logs\cytation.err.log` for any PyLabRobot kwarg-drift
-   errors. The reader uses `getattr`-style delegation in
-   `src/agilent_cytation_server/reader.py`, so missing methods surface
-   as clear `RuntimeError`s rather than `AttributeError` deep in PLR;
-   if any read fails, the device will fall into `error` state for
-   60 s (see `_RECENT_ERROR_WINDOW_S`).
-
-6. **Only then** apply the patch in `docs/LABSKILLS.md` from the
-   central server and restart the dashboard.
-
-### 3) Phase 4 — needs to be applied on the central server
-
-`ac-organic-lab/` is a read-only mirror on this PC, so the skill-catalog
-file and `equipment.yaml` flip are **not** committed. The exact patch
-to apply (one new file + one `__init__.py` import + one yaml diff)
-is in `docs/LABSKILLS.md`. Push it from the central server, then
-`git pull` here.
-
-## Known caveats / things to watch
-
-- **`protocol_version` bump is visible to the dashboard.** Until the
-  monorepo flips `protocol: "1.1"` in `equipment.yaml`, the dashboard
-  will log a version-mismatch warning. This is per
-  `STATUS_SPEC.md` §"Best Practices" #3 (intended behaviour, but you'll
-  see it in `ac-organic-lab-api` logs).
-- **`enforce_claims = true` is the default.** Any client that calls
-  `/control/*` without first claiming will get HTTP 423. The dashboard
-  passthrough on the central server handles this transparently for
-  `filter_every_well`; the cytation will follow the same pattern when
-  the registry flip lands.
-- **Imaging response is best-effort.** PyLabRobot does not (yet)
-  expose `capture_image` on the `PlateReader` frontend; the real
-  reader's `capture_image` delegates via `getattr` and will raise a
-  clear `RuntimeError` if the method is absent. For full imaging
-  support, the existing `scripts/capture_a1.py` remains the
-  fallback path that uses the backend directly.
-- **`details.dry_run` only appears in dry_run mode.** Tests that
-  assert on it should not run against a real-hardware service.
-- **Async / asyncio.Lock contention:** the service's single lock now
-  guards *both* status polls and control verbs. Long reads
-  (`integration_time_s = 60.0`) will block `/status` for the duration.
-  The aggregator's `poll_timeout_seconds: 3.0` in `equipment.yaml`
-  will see that as a poll failure; consider bumping it to 10 s if
-  long-running luminescence reads become common.
-
-## Where to start in the morning
-
-1. `git log --oneline -5` — sanity-check the three new commits are local.
-2. `uv sync --extra dev` and `uv run pytest -q` — confirm 68/68 still
-   passes on a clean checkout. (Do this **before** restoring the
-   production venv so you have a clean signal.)
-3. Read `docs/LABSKILLS.md` to understand exactly what gets
-   applied on the central server.
-4. Restore the production venv per step 1 above.
-5. Driver swap + hardware verification per step 2 above.
-6. Apply Phase 4 from the central server, restart the dashboard,
-   and confirm `await session.role("plate_reader").read_absorbance(...)`
-   works against the real Cytation.
-
-## File map (what's new in this branch)
+## Repo map
 
 ```
-new:
-  src/agilent_cytation_server/plate_state.py     # Phase 2 store
-  src/agilent_cytation_server/claims.py          # Phase 3 ClaimManager
-  src/agilent_cytation_server/control_args.py    # Phase 3 request/response schemas
-  tests/test_plate_state.py                      # 17 tests
-  tests/test_claims.py                           # 12 tests
-  tests/test_control.py                          # 17 tests
-  docs/LABSKILLS.md                             # lab-skills catalog patch
-  HANDOFF.md                                     # this file
+src/agilent_cytation_server/
+  api.py            # FastAPI app: spec endpoints + /control/* (16 verbs)
+  service.py        # state machine, activity/§2.3, allowed_actions, components
+  reader.py         # the ONLY module importing pylabrobot; real + stub readers
+  errors.py         # typed precondition failures -> HTTP 412 bodies
+  control_args.py   # request/response models; arg ranges mirror the driver's
+  claims.py         # v1.1 cooperative claim manager
+  plate_state.py    # per-well sample tracking, persisted to state.json
+  plates.py         # custom_96 / agilent_shallow_96 geometry -> PLR Plate
+  models.py         # re-exports the sdl-lab-contract wire types
 
-modified:
-  src/agilent_cytation_server/models.py          # WellSample / LoadedPlate / Claim* + v1.1 bump
-  src/agilent_cytation_server/service.py         # control methods, claim wiring, allowed_actions
-  src/agilent_cytation_server/api.py             # /control/* endpoints
-  src/agilent_cytation_server/reader.py          # read_* / capture_image delegation
-  src/agilent_cytation_server/config.py          # enforce_claims default
-  config.example.toml                            # docs the new toggles
-  tests/conftest.py                              # plate_state + advisory_client fixtures
-  tests/test_api.py                              # v1.0 -> v1.1 assertions
-  tests/fixtures/status_*.json                   # regenerated for v1.1 envelope
-  README.md                                      # roadmap + REST API tables
+docs/
+  IMPLEMENTATION.md # bench verification plan  <- start here for testing
+  LABSKILLS.md      # lab-skills catalog patch for the central server
+  PLATE_STATE.md    # per-well tracking design
+  INDEX.md          # which vendor manual answers which question
+  notes/            # lab-authored reference (optics, channels, read paths)
+
+RUNBOOK.md          # driver swaps, logs, restart, update  <- start here for ops
 ```

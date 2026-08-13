@@ -4,6 +4,12 @@ Lab-authored reference. Distilled from operating experience plus the BioTek
 manuals listed in [`../INDEX.md`](../INDEX.md). No vendor text is reproduced
 verbatim — for exact specs, consult the relevant PDF in `docs/vendor/`.
 
+> **Status (2026-08-12).** §1–§3 are background and still accurate. The API
+> sketched in §4 has **shipped** — see the live surface in
+> [`../../README.md`](../../README.md), which is authoritative; the shapes
+> below differ from what was built and are kept as design history. §5 and §6
+> are updated with what the implementation settled.
+
 ---
 
 ## 1. The three optical paths in a Cytation 5
@@ -108,10 +114,13 @@ This forces a choice for production:
 - **If only numeric reads are required** → `biotek_driver` backend works,
   no Zadig swap, Gen5 keeps full functionality. Simpler operationally.
 
-## 4. The proposed REST API for dynamic per-call control
+## 4. The proposed REST API (design history — superseded)
 
-The orchestrator-facing surface is the same regardless of backend choice.
-Wells, wavelengths, channels, objectives, and exposures are all per-call:
+This is what we sketched before building. It shipped with different paths
+(`/control/read/absorbance`, not `read.absorbance`) and a different imaging
+shape (one well per call, not a list). **Do not code against this section** —
+the README's table is the live contract. Kept because the reasoning about
+per-call wells / wavelengths / channels is still the right frame.
 
 ```http
 POST /control/read.absorbance
@@ -167,25 +176,58 @@ Backend translation:
 | `read.spectrum` | `await reader.read_absorbance_spectrum(plate, wells=..., start=..., stop=..., step=...)` | spectrum `.prt`, partial-plate XML |
 | `imaging.capture` | `await imager.capture(plate=..., wells=..., mode=..., objective=..., exposure_ms=..., focal_height=..., gain_db=...)` | **not supported** — return 501 |
 
-This is what the read-only `/status` API graduates to in Phase 3 (with the
-v1.1 STATUS_SPEC claim/heartbeat/release wrapping each control call).
+What actually shipped, for comparison: paths are `/control/read/{absorbance,
+fluorescence,luminescence}` and `/control/imaging/capture`; `imaging.capture`
+takes a single `well` rather than a list; `read.spectrum` does not exist at
+all (PyLabRobot has no spectrum method); and the reads take **no `gain`**,
+returning 422 if one is supplied, because the driver exposes no read-gain
+control and silently dropping it would yield a number measured at some other
+gain. Each call is wrapped by the v1.1 claim protocol as anticipated.
 
 ## 5. Practical "where do I start" matrix
 
-| Goal today | Backend | Driver work | Notes |
-|---|---|---|---|
-| UV absorbance reads | either | `biotek_driver`: zero. PyLabRobot: Zadig. | If Gen5 must coexist, prefer `biotek_driver`. |
-| Fluorescence reads | either | same | same |
-| Brightfield imaging | PyLabRobot only | Zadig + Spinnaker SDK install | Spinnaker doesn't conflict with Gen5; FTDI does. |
-| DAPI / GFP / RFP imaging | PyLabRobot only | Zadig + Spinnaker SDK install + correct filter cube physically present | Confirm cube installed in your unit. |
-| Mix of imaging + Gen5-driven reads on same PC | not currently feasible without driver swap | RUNBOOK §3/§4 manual swap | Or: split into two PCs, one Gen5, one PyLabRobot. |
+As built on `sdl2-pc-03-cytation`. The PC is currently in **PyLabRobot mode**
+(libusbK bound), so everything below goes through this service.
+
+| Goal | How | State |
+|---|---|---|
+| Absorbance reads, 230–999 nm | `POST /control/read/absorbance` | needs bench verification |
+| Fluorescence reads, ex/em 250–700 nm | `POST /control/read/fluorescence` | needs bench verification |
+| Brightfield imaging | `POST /control/imaging/capture` | **verified on hardware** |
+| Phase-contrast imaging | same, `channel: "phase_contrast"` | driver permits it (firmware 2.09); never imaged |
+| DAPI / GFP / RFP imaging | same | **blocked** — 4 cube slots, all empty |
+| Incubation / shaking | `/control/incubator/*`, `/control/shake/*` | verified empty |
+| Spectral scans | — | not available in PyLabRobot at all |
+| Gen5-driven reads *and* imaging together | — | still impossible; the FTDI chip binds to one driver (RUNBOOK §4/§5) |
+
+The last row is unchanged and probably permanent short of the `ftd2xx` patch
+described in RUNBOOK §8. Note the trade-off has shifted, though: with the full
+read surface now on the PyLabRobot side, the reason to swap back to Gen5 is
+spectral scans and vendor protocols, not basic reads.
 
 ## 6. Open questions
 
-- Whether `biotek_driver` is redistributable (its source/license is unknown,
-  and it isn't on PyPI). If so we could ship a `biotek_driver` extra
-  alongside the existing `plr` extra in `pyproject.toml`.
-- Whether PyLabRobot's `imager.capture` accepts a sequence of wells in one
-  call or needs a loop. Verify against pylabrobot HEAD when implementing.
-- Whether autofocus state can be cached across wells in one capture batch
-  (image-based AF is slow per well; laser AF is fast).
+Resolved since this note was written:
+
+- ~~Whether PyLabRobot's `imager.capture` accepts a sequence of wells~~ — it
+  takes one well. It also refuses any objective outside a hardcoded
+  4×/20×/40× size table, which is why this service drives the backend
+  primitives directly instead.
+- ~~Whether autofocus state can be cached across wells~~ — moot for now: the
+  service searches per capture (golden-section on focal height, capped at 8
+  rounds). Once a per-plate focal height is known from the bench, hard-coding
+  it is cheaper than searching every time.
+
+Still open:
+
+- Whether `biotek_driver` is redistributable (source/license unknown, not on
+  PyPI). If so we could ship it as an extra alongside `plr` — which would
+  matter mainly for spectral scans, the one capability PyLabRobot lacks.
+- Whether the instrument can cool at all. PyLabRobot hardcodes
+  `supports_cooling = True` and clamps to 4–45 °C, but the Cytation 5 spec
+  sheet gives the incubator as **4 °C above ambient → 65 °C** — i.e. likely
+  heating-only, with PLR's "4 °C" being an absolute-vs-relative misreading and
+  its 45 °C ceiling well below the instrument's. Worth one bench test.
+- Whether the phase annulus is fitted in the condenser. All three objectives
+  are `PL_FL_Phase`, so the objectives are ready; the condenser side is
+  unverified.

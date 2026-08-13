@@ -462,8 +462,34 @@ Two things worth knowing:
 
 ## 8. Looking ahead
 
-- **Phase 2** — Per-well sample tracking via PyLabRobot `Container` / `Plate` / `Well`; surfaced in `details.loaded_plate` of `/status`. Requires real-hardware mode (libusbK) for measurements; can be developed and tested in `dry_run` with stubbed plate state.
-- **Phase 3** — STATUS_SPEC v1.1: `POST /control/claim`, `/heartbeat`, `/release`, full `/control/*` write surface (drawer, reads, plate load/unload, imaging capture, incubator).
-- **Phase 4** — Skill catalog registration in `ac-organic-lab/lab_skills`.
+Phases 2–5 have all shipped: per-well sample tracking, the v1.1 claim protocol
+and `/control/*` surface, v1.2 `activity`, and the incubator / shaker /
+imaging work of 2026-08-12. What remains is verification and one purchase, not
+implementation — see [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) for the
+bench plan and [`HANDOFF.md`](HANDOFF.md) for the current state of each
+subsystem.
 
-If the daily Gen5 ↔ PyLabRobot toggle becomes painful, the long-term fix is to **patch PyLabRobot's `pylabrobot.io.ftdi.FTDI` to use FTDI's `ftd2xx` driver** instead of libusb. `ftd2xx` coexists with the FTDI vendor driver (it *is* part of the FTDI driver bundle), so both Gen5 and PyLabRobot could share the chip with no Zadig swaps. This is a feature-sized change that needs an upstream PR or a vendored driver shim — deferred until the daily-driver pain is real.
+Open technical directions, in rough order of how likely they are to matter:
+
+- **Filter cubes.** The wheel reports 4 slots, all empty, so every
+  fluorescence *imaging* channel is refused. Fluorescence *reads* are
+  unaffected — those use the reader's monochromators and need nothing. This
+  is a purchase, not a code change.
+- **Escaping the Zadig toggle.** If the daily Gen5 ↔ PyLabRobot swap becomes
+  painful, the long-term fix is to patch PyLabRobot's
+  `pylabrobot.io.ftdi.FTDI` to use FTDI's `ftd2xx` driver instead of libusb.
+  `ftd2xx` coexists with the FTDI vendor driver (it *is* part of the FTDI
+  bundle), so both stacks could share the chip with no swaps. Feature-sized;
+  needs an upstream PR or a vendored shim.
+- **Spectral scans.** Neither absorbance nor fluorescence spectra exist in
+  PyLabRobot's BioTek backend — only single-wavelength endpoint reads. The
+  instrument supports scans through Gen5, so this is an upstream gap rather
+  than a hardware one.
+- **Whole-well montage.** `CytationBackend.capture()` accepts
+  `coverage="full"` and tiles the well, returning several frames. Not exposed
+  by this service. Note `overlap` is accepted but immediately asserted `None`
+  upstream, so frames are adjacent, not stitchable without work.
+- **pylabrobot v1.** PR #1000 restructures the machine interfaces and touches
+  `biotek_backend.py`; a `CytationMicroscopyBackend` on a side branch suggests
+  the reader and imager split apart. Unreleased — we pin 0.2.1 — but
+  `reader.py` will need rework when it lands.

@@ -59,10 +59,23 @@ the lab PC (gitignored). This index just tells you which doc to reach for.
 
 | Doc | Touches what in this repo |
 |---|---|
-| Cytation 5 Operator's Manual + Specs | `src/agilent_cytation_server/reader.py` (capability discovery), `config.example.toml` (λ ranges, plate models). |
-| Imaging User Guide + Objective/Filter Catalog | future `src/agilent_cytation_server/imaging.py` (channel/objective enums, exposure validation). |
-| Gen5 XML Protocol Schema + Partial Plate | future `biotek_driver`-backend code path (template library, partial-plate XML rewriter). |
-| BioStack Communications Reference | a separate repo `agilent-biostack-server` (planned, port 9334), not this one. |
+| Cytation 5 Operator's Manual + Specs | `src/agilent_cytation_server/reader.py` (capability discovery), `control_args.py` (λ / focal-height ranges), `config.example.toml` (plate models). |
+| Imaging User Guide + Objective/Filter Catalog | `reader.py` — `_CHANNEL_ALIASES`, `_resolve_channel`, `_resolve_objective`. Consult the catalog before buying a filter cube; this unit has 4 empty slots. |
+| Gen5 XML Protocol Schema + Partial Plate | a possible future `biotek_driver` code path (template library, partial-plate XML rewriter) — relevant mainly for spectral scans, which PyLabRobot cannot do. |
+| BioStack Communications Reference | the separate `agilent-biostack4-standalone` repo (service `biostack4`, port 8050), not this one. |
+
+> **Where the manual and the driver disagree, check the manual.** Two known
+> discrepancies, both in PyLabRobot's favour being *wrong*:
+>
+> - **Incubator range.** The spec sheet gives 4 °C above ambient → 65 °C.
+>   PyLabRobot clamps to an absolute 4–45 °C, which reads like an
+>   absolute-vs-relative misreading on the low end and is well short on the
+>   high end. Our `/control/incubator/set_temperature` enforces the driver's
+>   range, so 50 °C is refused even though the instrument supports it.
+> - **Emission range.** The spec sheet gives fluorescence em 300–700 nm;
+>   PyLabRobot allows 250–700. The driver is the more permissive of the two,
+>   so a request between 250 and 300 nm may be accepted and then behave
+>   oddly.
 
 ## Adding a doc
 

@@ -1,6 +1,6 @@
 # BioTek (Agilent) Cytation 5 — Python driver + REST API
 
-PyLabRobot-backed Python driver and REST API service for the **BioTek (Agilent) Cytation 5 Multi-Mode Reader**, communicating over USB. Driver layer is `pylabrobot.plate_reading.PlateReader` + `pylabrobot.plate_reading.biotek.Cytation5Backend`. The service exposes the unified lab equipment status spec so the AC Organic Self-Driving Lab dashboard can poll it like any other device.
+PyLabRobot-backed Python driver and REST API service for the **BioTek (Agilent) Cytation 5 Multi-Mode Reader**, communicating over USB. Driver layer is `pylabrobot.plate_reading.PlateReader` + `pylabrobot.plate_reading.agilent.biotek_cytation_backend.CytationBackend` (not the deprecated `Cytation5Backend` alias). The service exposes the unified lab equipment status spec so the AC Organic Self-Driving Lab dashboard can poll it like any other device.
 
 > **API conformance:** This repo conforms to **lab status spec v1.2** — see `docs/STATUS_SPEC.md` in the [`ac-organic-lab`](https://github.com/cyrilcaoyang/ac-organic-lab) monorepo. The wire types come from the shared `sdl-lab-contract` package. The full `/control/*` write surface is wired (drawer, reads, plate load/unload, imaging capture, claim/heartbeat/release), and `/status` reports v1.2 `activity` observed from the instrument — see [Activity and utilization](#activity-and-utilization-v12).
 >
@@ -38,7 +38,7 @@ not an operation in progress, and `components.incubator` is where it shows up.
 
 `metrics["cycles_total"]` is the spec's reserved counter (§2.3.1). It matters because a read finishes well inside the dashboard's 60 s poll: a sampled `activity` series does not undercount those reads, it misses them entirely. The poll-to-poll delta of this counter is the accountable number. It resets on service restart, by contract. The repo's original `read_count` metric is kept alongside it and stays measurement-only.
 
-`activity_since` is the instant the current span began, so a reader can recover an in-progress read's true elapsed time. While `activity == "running"`, `allowed_actions` advertises only the claim verbs — nothing that would start a second concurrent operation.
+`activity_since` is the instant the current span began, so a reader can recover an in-progress read's true elapsed time. While `activity == "running"`, `allowed_actions` advertises only the claim verbs plus `shake.stop` — nothing that would start a second concurrent operation, but never without a way to stop the one in progress (§2.3).
 
 **Why `/status` does not take the reader lock.** Every operation holds an `asyncio.Lock` for its full duration. When `/status` shared that lock, a poll issued during a read returned only *after* the read completed, with the busy flag already cleared — so `busy` and `activity: "running"` were unobservable from outside, defeating the point of the field. `/status` now composes its envelope from in-memory state plus a short-TTL readback cache, and will wait at most 50 ms for the lock to refresh that cache. `details.readback_age_s` reports how stale the cached instrument reading is.
 
@@ -48,7 +48,7 @@ not an operation in progress, and `components.incubator` is where it shows up.
 |---|---|---|
 | **0+1** | STATUS_SPEC v1.0 read-only API on the Cytation PC; `equipment.yaml` flips from `mock` to `http`. | ✅ shipped |
 | **2** | Per-well sample tracking via persistent `PlateStateStore`; surfaced under `details.loaded_plate`. See [`docs/PLATE_STATE.md`](docs/PLATE_STATE.md) for the cross-device strategy. | ✅ shipped |
-| **3** | STATUS_SPEC v1.1: `POST /control/claim`, `/heartbeat`, `/release`, `allowed_actions`, full `/control/*` write surface (drawer, reads, plate load/unload, imaging capture). | ✅ shipped — dry-run tested, hardware verification pending |
+| **3** | STATUS_SPEC v1.1: `POST /control/claim`, `/heartbeat`, `/release`, `allowed_actions`, full `/control/*` write surface (drawer, reads, plate load/unload, imaging capture). | ✅ shipped — imaging verified on hardware; reads still pending ([`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md)) |
 | **4** | `lab_skills/skill_catalog/plate_reader.py` registered in the monorepo so workflows can `await session.role("plate_reader").read_absorbance(...)`. | patch ready in [`docs/LABSKILLS.md`](docs/LABSKILLS.md); apply from the central server |
 | **5** | STATUS_SPEC v1.2: `sdl-lab-contract` types, `activity` / `activity_since` observed from the instrument, reserved `cycles_total`, and a `/status` path that stays answerable mid-operation. | ✅ shipped |
 
@@ -56,7 +56,7 @@ not an operation in progress, and `components.incubator` is where it shows up.
 
 - **Windows 10 / 11** lab PC (PyLabRobot's USB transport binds via Zadig + libusbK).
 - **Python 3.10+**.
-- **PyLabRobot** with the USB extras (installed via `--extra plr --extra windows`).
+- **PyLabRobot** with the USB extras (`--extra plr --extra windows`), plus `--extra imaging` and the PySpin wheel for the microscopy path.
 - **Cytation 5** powered on, USB cable connected.
 - **Zadig** has replaced the Cytation USB endpoint's driver with **libusbK** (one-time per PC; see [USB driver setup](#usb-driver-setup) below).
 
@@ -82,8 +82,11 @@ C:\SDL_Tools\uv.exe run pytest -q
 # (9333 on purpose: the deployed NSSM service already holds 8040)
 C:\SDL_Tools\uv.exe run --extra api agilent-cytation-serve --port 9333 --dry-run
 
-# Production sync (pylabrobot + pyusb + libusb-package + fastapi)
-C:\SDL_Tools\uv.exe sync --extra api --extra plr --extra windows
+# Production sync (pylabrobot + pyusb + libusb-package + fastapi + numpy/pillow)
+C:\SDL_Tools\uv.exe sync --extra api --extra plr --extra windows --extra imaging
+# PySpin is NOT in the lockfile (FLIR does not publish to PyPI) - install the
+# wheel separately and note the service runs `uv run --no-sync` so it is never
+# pruned. See RUNBOOK.md §3.1.
 ```
 
 For **production deployment** (NSSM-wrapped Windows Service that auto-starts on boot, logs to `C:\SDL_Logs\cytation.{out,err}.log`), follow the canonical recipe in [`ac-organic-lab/docs/DEVICE_PC_SETUP.md`](https://github.com/cyrilcaoyang/ac-organic-lab/blob/main/docs/DEVICE_PC_SETUP.md). The code's default port is 9333, but the deployed instance runs on port **8040** (set in `config.toml` — the Cytation PC hosts several services; see DEVICE_PC_SETUP §7 for the port map). Do **not** give the service a `DependOnService` on Tailscale or anything else — see `RUNBOOK.md` §6 for the 2026-08-10 outage that rule comes from.
@@ -295,7 +298,11 @@ agilent-cytation-server/
 │   ├── __init__.py
 │   ├── __main__.py              # CLI: `python -m agilent_cytation_server`
 │   ├── config.py                # config.toml loader
-│   ├── models.py                # lab status spec v1.0 Pydantic models
+│   ├── models.py                # re-exports the sdl-lab-contract wire types
+│   ├── errors.py                # typed preconditions -> HTTP 412 bodies
+│   ├── control_args.py          # /control/* request + response models
+│   ├── claims.py                # v1.1 cooperative claim manager
+│   ├── plate_state.py           # per-well sample tracking (state.json)
 │   ├── plates.py                # custom_96 + agilent_shallow_96 factories
 │   ├── reader.py                # CytationReader (real) + StubCytationReader
 │   └── service.py               # state machine + asyncio.Lock + dry-run path

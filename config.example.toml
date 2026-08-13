@@ -4,9 +4,9 @@
 #
 # config.toml is gitignored — your local settings stay on the lab PC.
 #
-# Conformance: this service implements lab status spec v1.1 -- cooperative
-# claims plus the full /control/* write surface. See the ac-organic-lab
-# monorepo's docs/STATUS_SPEC.md for the contract.
+# Conformance: this service implements lab status spec v1.2 -- cooperative
+# claims, the full /control/* write surface, and observed `activity`. See
+# the ac-organic-lab monorepo's docs/STATUS_SPEC.md for the contract.
 
 [instrument]
 # PyLabRobot backend. "cytation5" creates a real CytationBackend at
@@ -20,7 +20,16 @@ usb_serial = ""
 # Set false on a Cytation 5 without the microscopy module so the
 # `imaging` component is hidden from /status (avoids advertising a
 # capability the device cannot honor).
+#
+# NOTE this flag says imaging is *wanted*, not that a camera was found.
+# `imaging.capture` is gated on the camera actually initialising, which
+# needs the Spinnaker SDK plus the PySpin wheel (RUNBOOK §3.1). When the
+# camera is missing, /status reports components.imaging.connected = false
+# with the reason in details.imaging.camera_error, and captures return
+# HTTP 412 camera_not_ready.
 enabled = true
+# Where capture PNGs are written. Defaults to <repo>/captures.
+# captures_dir = "C:/Users/sdl2/Projects/agilent-cytation-server/captures"
 
 [plates]
 # Default plate model used by Phase 2 sample tracking. One of:
@@ -60,10 +69,10 @@ well_max_volume_ul = 200.0
 # Used by `python -m agilent_cytation_server` / `agilent-cytation-serve`.
 [service]
 host = "0.0.0.0"                # Bind address (Tailscale-only by ACL)
-# Port 9333 was chosen to avoid the 8000-cluster used by other lab
-# devices (xArm runs on 8000 on this same PC) and to stay out of common
-# dev ports (3000 / 5000 / 8080 / 8443 / 8888 / 9000). If 9333 is
-# already in use on this PC, fall back to 8765 or 9742.
+# Port 9333 is the code default, chosen to avoid the 8000-cluster used by
+# other lab devices (xArm runs on 8000 on this same PC) and common dev
+# ports. The DEPLOYED service on sdl2-pc-03-cytation runs on 8040 instead
+# -- see DEVICE_PC_SETUP.md §7 in the monorepo for that PC's port map.
 port = 9333
 dry_run = false                 # true = stub driver (CI / dev / non-Windows)
 cors_origins = ["*"]            # Tailnet ACLs gate access, so * is fine
@@ -80,4 +89,11 @@ enforce_claims = true
 [dashboard]
 equipment_id = "cytation_5"
 equipment_name = "BioTek Cytation 5"
-# equipment_version = "0.1.0"   # optional - bump on driver releases
+# equipment_version is left unset on purpose: the service fills it from the
+# instrument's own firmware revision at connect (2.09 on this unit). Set it
+# only if you would rather report the service version than the firmware --
+# an explicit value here wins. The firmware revision is load-bearing, not
+# cosmetic: the driver refuses phase-contrast imaging when it starts with
+# "1" (its Cytation1 discriminator), which is why /status publishes
+# details.imaging.phase_contrast_available.
+# equipment_version = "0.1.0"

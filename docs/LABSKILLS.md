@@ -1,10 +1,14 @@
 # Skill catalog patch for `lab-skills`
 
 This is a **drop-in patch** for the central server's
-[`ac-organic-lab`](https://github.com/cyrilcaoyang/ac-organic-lab) monorepo. The
-Cytation device PC carries a read-only mirror of that repo, so the changes here
-cannot be committed from this PC — they need to be applied from the central
-server (or via a PR upstream).
+[`ac-organic-lab`](https://github.com/cyrilcaoyang/ac-organic-lab) monorepo.
+
+The device PC's `ac-organic-lab/` checkout shares the central server's remote
+and **may be edited and pushed from here** — an earlier version of this doc
+called it a read-only mirror, which is no longer the workspace rule. Either
+apply the patch from this PC and let the central server pull, or apply it
+there; just coordinate so the two do not diverge. Contract changes are still
+better made on the central server when practical.
 
 It declares one `SkillDef` per `/control/*` verb the device exposes, so
 workflows can `await session.role("plate_reader").read_absorbance(...)` instead
