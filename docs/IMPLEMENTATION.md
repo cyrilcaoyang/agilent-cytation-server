@@ -19,13 +19,15 @@ logs, restart). This file is only the test plan.
 | Camera | `camera_ready: true` | `details.imaging.camera_ready` |
 | FTDI driver | bound to **libusbK** | `Get-PnpDevice \| ? InstanceId -match VID_0403` → `Class: libusbk devices` |
 | Firmware | `2.09` | `equipment_version` |
-| Git branch | `fix/optical-write-surface` | see the warning below |
+| Git branch | `main` | `git -C C:\Users\sdl2\Projects\agilent-cytation-server branch --show-current` |
 
-> **The live service runs from a branch, not `main`.** The venv holds an
-> editable install pointing at the working tree, so whatever is checked out
-> *is* what executes. Checking out `main` silently reverts the reader to the
-> broken imaging path with no error. Leave the checkout alone, or merge the PR
-> first.
+> **The live service runs from whatever is checked out.** The venv holds an
+> editable install pointing at the working tree, so there is no build step
+> between `git checkout` and what the instrument does. The work described here
+> was merged to `main` on 2026-08-12 and the PC is on `main`, so you can leave
+> the checkout alone. Do not switch branches mid-session without stopping the
+> service — a checkout that predates a fix reverts the reader silently, and you
+> will not find out until the next restart.
 
 Claims are **enforced**, so every `/control/*` call needs an `X-Claim-Token`.
 Get one with `POST /control/claim {owner, session_id}` and release it at the

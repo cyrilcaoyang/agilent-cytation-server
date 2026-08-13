@@ -34,11 +34,17 @@ assertion fails, so it needs a plate and a person. That is what
 
 ## Two things that will bite you
 
-**The live service runs from a branch.** The venv holds an editable install
-pointing at the working tree, so whatever is checked out *is* what executes.
-The deployed code is `fix/optical-write-surface`; checking out `main` on that
-PC silently reverts the reader to a broken imaging path with no error. Merge
-the PR, or leave the checkout alone.
+**The live service runs from the working tree.** The venv holds an editable
+install pointing at the checkout, so whatever is checked out *is* what
+executes — there is no build step between `git checkout` and what the
+instrument does.
+
+This is currently benign: `fix/optical-write-surface` was merged to `main`
+(fast-forward, 2026-08-12) and the PC sits on `main`, so the deployed code and
+the default branch agree. It stops being benign the moment someone works on a
+branch here — checking out anything that predates a fix silently reverts the
+reader, with no error until the next restart. If you need a working branch on
+this PC, stop the service first or use a separate clone.
 
 **PySpin is not in the lockfile and `uv run` deletes it.** FLIR does not
 publish to PyPI, so the wheel is installed out-of-band and any plain `uv run`
