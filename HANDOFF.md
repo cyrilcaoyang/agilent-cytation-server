@@ -6,7 +6,7 @@ Three commits land in this batch, in order:
 |---|---|---|
 | `615e783` | **2** | Per-well sample tracking via `PlateStateStore` (JSON-backed). Surfaced under `details.loaded_plate` on `/status`. |
 | `ad189a3` | **3** | STATUS_SPEC v1.1 — cooperative claim protocol + full `/control/*` write surface. `protocol_version` bumped to `1.1`. |
-| *(this commit)* | **4** | Skill catalog draft + handoff doc at `docs/phase4_handoff.md`. The catalog itself cannot be applied from this PC because `ac-organic-lab/` is a read-only mirror per `~/Projects/CLAUDE.md`. |
+| *(this commit)* | **4** | Skill catalog draft + handoff doc at `docs/LABSKILLS.md`. The catalog itself cannot be applied from this PC because `ac-organic-lab/` is a read-only mirror per `~/Projects/CLAUDE.md`. |
 
 Test suite: **68/68 passing** in `dry_run`. Hardware was **not** touched
 overnight — all verification is local stub-only.
@@ -77,7 +77,7 @@ The dashboard's `equipment.yaml` still says `protocol: "1.0"` and
    if any read fails, the device will fall into `error` state for
    60 s (see `_RECENT_ERROR_WINDOW_S`).
 
-6. **Only then** apply the patch in `docs/phase4_handoff.md` from the
+6. **Only then** apply the patch in `docs/LABSKILLS.md` from the
    central server and restart the dashboard.
 
 ### 3) Phase 4 — needs to be applied on the central server
@@ -85,7 +85,7 @@ The dashboard's `equipment.yaml` still says `protocol: "1.0"` and
 `ac-organic-lab/` is a read-only mirror on this PC, so the skill-catalog
 file and `equipment.yaml` flip are **not** committed. The exact patch
 to apply (one new file + one `__init__.py` import + one yaml diff)
-is in `docs/phase4_handoff.md`. Push it from the central server, then
+is in `docs/LABSKILLS.md`. Push it from the central server, then
 `git pull` here.
 
 ## Known caveats / things to watch
@@ -121,7 +121,7 @@ is in `docs/phase4_handoff.md`. Push it from the central server, then
 2. `uv sync --extra dev` and `uv run pytest -q` — confirm 68/68 still
    passes on a clean checkout. (Do this **before** restoring the
    production venv so you have a clean signal.)
-3. Read `docs/phase4_handoff.md` to understand exactly what gets
+3. Read `docs/LABSKILLS.md` to understand exactly what gets
    applied on the central server.
 4. Restore the production venv per step 1 above.
 5. Driver swap + hardware verification per step 2 above.
@@ -139,7 +139,7 @@ new:
   tests/test_plate_state.py                      # 17 tests
   tests/test_claims.py                           # 12 tests
   tests/test_control.py                          # 17 tests
-  docs/phase4_handoff.md                         # Phase 4 monorepo patch
+  docs/LABSKILLS.md                             # lab-skills catalog patch
   HANDOFF.md                                     # this file
 
 modified:

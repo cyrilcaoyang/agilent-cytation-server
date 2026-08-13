@@ -11,7 +11,8 @@ PyLabRobot-backed Python driver and REST API service for the **BioTek (Agilent) 
 > now reaches the instrument with correct arguments, but the driver's
 > acknowledgement assertion fails with no plate physically present, so
 > confirming absorbance / fluorescence needs a plate in the reader and
-> someone at the bench. See `RUNBOOK.md` §3-§4.
+> someone at the bench. The test plan for that session — what to bring, what
+> to run, and what to record — is [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
 ### Activity and utilization (v1.2)
 
@@ -48,7 +49,7 @@ not an operation in progress, and `components.incubator` is where it shows up.
 | **0+1** | STATUS_SPEC v1.0 read-only API on the Cytation PC; `equipment.yaml` flips from `mock` to `http`. | ✅ shipped |
 | **2** | Per-well sample tracking via persistent `PlateStateStore`; surfaced under `details.loaded_plate`. See [`docs/PLATE_STATE.md`](docs/PLATE_STATE.md) for the cross-device strategy. | ✅ shipped |
 | **3** | STATUS_SPEC v1.1: `POST /control/claim`, `/heartbeat`, `/release`, `allowed_actions`, full `/control/*` write surface (drawer, reads, plate load/unload, imaging capture). | ✅ shipped — dry-run tested, hardware verification pending |
-| **4** | `lab_skills/skill_catalog/plate_reader.py` registered in the monorepo so workflows can `await session.role("plate_reader").read_absorbance(...)`. | draft in `docs/phase4_handoff.md`; needs to be applied on the central server |
+| **4** | `lab_skills/skill_catalog/plate_reader.py` registered in the monorepo so workflows can `await session.role("plate_reader").read_absorbance(...)`. | patch ready in [`docs/LABSKILLS.md`](docs/LABSKILLS.md); apply from the central server |
 | **5** | STATUS_SPEC v1.2: `sdl-lab-contract` types, `activity` / `activity_since` observed from the instrument, reserved `cycles_total`, and a `/status` path that stays answerable mid-operation. | ✅ shipped |
 
 ## Prerequisites

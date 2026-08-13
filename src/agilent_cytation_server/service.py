@@ -898,7 +898,7 @@ class CytationService:
 
         Mirrors the skill names declared in
         ``ac-organic-lab/skills/.../skill_catalog/plate_reader.py``
-        (Phase 4 -- see docs/phase4_handoff.md). Always advertises
+        (see docs/LABSKILLS.md). Always advertises
         claim verbs so an SDK can negotiate exclusive control before
         attempting any state-bound action.
 

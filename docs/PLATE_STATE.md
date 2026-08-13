@@ -483,7 +483,7 @@ When in doubt:
   `unload_plate` / `update_well` methods
 - `src/agilent_cytation_server/api.py` — `/control/plate/*` /
   `/control/well/update` endpoints
-- [`docs/phase4_handoff.md`](phase4_handoff.md) — the central server's
+- [`docs/LABSKILLS.md`](LABSKILLS.md) — the central server's
   skill-catalog patch; mirrors `WellSample` / `PlateLoadArgs` /
   `WellUpdateArgs` from the device-side models documented above.
 - [`ac-organic-lab/docs/OBSERVABILITY.md`](https://github.com/cyrilcaoyang/ac-organic-lab/blob/main/docs/OBSERVABILITY.md)
