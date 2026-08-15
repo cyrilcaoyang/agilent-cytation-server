@@ -54,6 +54,20 @@ well_size_y = 6.5
 well_size_z = 11.0
 well_max_volume_ul = 350.0
 
+# 19 mm-tall square-well 96 plate. Well footprint/depth and max volume
+# are nominal for a 9 mm-pitch square well; the instrument validates
+# pitch, well centres, and plate height (size_z) during reads.
+[plates.square_96_19mm]
+size_x = 127.76
+size_y = 85.48
+size_z = 19.0
+well_dx = 9.0
+well_dy = 9.0
+well_size_x = 8.0
+well_size_y = 8.0
+well_size_z = 15.0
+well_max_volume_ul = 500.0
+
 [plates.agilent_shallow_96]
 size_x = 127.76
 size_y = 85.48

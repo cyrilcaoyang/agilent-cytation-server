@@ -18,7 +18,7 @@ from agilent_cytation_server.plates import (
 
 
 def test_known_models_are_registered() -> None:
-    assert set(known_models()) == {"custom_96", "agilent_shallow_96"}
+    assert set(known_models()) == {"custom_96", "agilent_shallow_96", "square_96_19mm"}
     for model_id, factory in PLATE_FACTORIES.items():
         assert callable(factory), f"{model_id} factory is not callable"
 

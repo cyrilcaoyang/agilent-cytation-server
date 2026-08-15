@@ -36,6 +36,13 @@ class PlateGeometry:
     well_size_y: float
     well_size_z: float
     well_max_volume_ul: float
+    # Well-grid anchor: distance from the plate's left edge to the centre
+    # of column 1, and from the front edge to the centre of row H. The
+    # instrument validates the well centres derived from these during
+    # reads, so they must match the physical plate. Defaults are the
+    # ANSI/SLAS (SBS) standard footprint.
+    a1_center_x: float = 14.38
+    h_center_y: float = 11.24
 
     @classmethod
     def from_config(cls, model: str) -> "PlateGeometry":
@@ -56,6 +63,8 @@ class PlateGeometry:
             well_size_y=float(section["well_size_y"]),
             well_size_z=float(section["well_size_z"]),
             well_max_volume_ul=float(section["well_max_volume_ul"]),
+            a1_center_x=float(section.get("a1_center_x", 14.38)),
+            h_center_y=float(section.get("h_center_y", 11.24)),
         )
 
 
@@ -83,6 +92,12 @@ def agilent_shallow_96(name: str, *, geometry: PlateGeometry | None = None) -> A
     return _build_plate(name, "agilent_shallow_96", geometry)
 
 
+def square_96_19mm(name: str, *, geometry: PlateGeometry | None = None) -> Any:
+    """Build the 19 mm-tall square-well 96 plate as a PyLabRobot ``Plate``."""
+
+    return _build_plate(name, "square_96_19mm", geometry)
+
+
 def _build_plate(name: str, model: str, geometry: PlateGeometry | None) -> Any:
     """Lazy-import PyLabRobot and assemble a 96-well :class:`Plate`."""
 
@@ -99,15 +114,19 @@ def _build_plate(name: str, model: str, geometry: PlateGeometry | None) -> Any:
             "the lab PC)."
         ) from exc
 
+    # NB: in create_ordered_items_2d, dx/dy are the bottom-left *corner*
+    # of the column-1 / row-H wells, and item_dx/item_dy are the
+    # centre-to-centre *pitch* (9 mm on a 96-well plate). The Cytation
+    # rejects reads whose derived well centres don't match the plate.
     ordered_items = create_ordered_items_2d(
         Well,
         num_items_x=12,
         num_items_y=8,
-        dx=geometry.well_dx,
-        dy=geometry.well_dy,
+        dx=geometry.a1_center_x - geometry.well_size_x / 2,
+        dy=geometry.h_center_y - geometry.well_size_y / 2,
         dz=0.0,
-        item_dx=geometry.well_size_x,
-        item_dy=geometry.well_size_y,
+        item_dx=geometry.well_dx,
+        item_dy=geometry.well_dy,
         size_x=geometry.well_size_x,
         size_y=geometry.well_size_y,
         size_z=geometry.well_size_z,
@@ -125,6 +144,7 @@ def _build_plate(name: str, model: str, geometry: PlateGeometry | None) -> Any:
 PLATE_FACTORIES: dict[str, Callable[..., Any]] = {
     "custom_96": custom_96,
     "agilent_shallow_96": agilent_shallow_96,
+    "square_96_19mm": square_96_19mm,
 }
 
 
@@ -140,4 +160,5 @@ __all__ = [
     "agilent_shallow_96",
     "custom_96",
     "known_models",
+    "square_96_19mm",
 ]
