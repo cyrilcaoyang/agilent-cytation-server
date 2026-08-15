@@ -2,9 +2,11 @@
 
 This script bypasses the high-level ``Cytation5Backend.capture()`` because
 PyLabRobot 0.2.1 hardcodes an ``image_size`` lookup that only knows
-magnifications 4x, 20x, and 40x. With a 1.25x PL APO objective, that
-table raises ValueError before capture even runs. We call the underlying
-primitives directly instead.
+magnifications 4x, 20x, and 40x — any other objective raises ValueError
+before capture even runs. The 4x/20x/40x Phase objectives currently
+fitted fall inside that table, but we call the underlying primitives
+directly anyway: it survives refitting glass the table doesn't know
+(e.g. 1.25x or 60x) and allows per-capture LED intensity control.
 
 Prerequisites:
   1. Zadig swap done (FTDI -> libusbK). Verify with scripts/verify_reader.py first.

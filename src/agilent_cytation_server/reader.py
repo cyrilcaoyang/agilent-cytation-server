@@ -775,10 +775,13 @@ class CytationReader:
         This drives the backend primitives rather than PyLabRobot's
         ``Imager.capture()``. That is not a shortcut: ``Imager.capture()``
         consults a hardcoded magnification -> image-size table that knows
-        only 4x/20x/40x, so with the 1.25x PL APO installed on this
-        instrument it raises ``ValueError`` before touching the camera.
-        ``scripts/capture_a1.py`` established this sequence on the real
-        unit; keep the two in step.
+        only 4x/20x/40x and raises ``ValueError`` before touching the
+        camera for any other objective. The 4x/20x/40x Phase objectives
+        currently fitted fall inside that table, but the primitive path is
+        kept regardless: it survives refitting glass the table doesn't
+        know (e.g. 1.25x or 60x), and it is the only way to set LED
+        intensity per capture. ``scripts/capture_a1.py`` established this
+        sequence on the real unit; keep the two in step.
         """
 
         if self._reader is None or self._backend is None:
