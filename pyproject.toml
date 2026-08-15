@@ -56,6 +56,10 @@ imaging = [
     # to import". This pin is load-bearing, not tidiness.
     "numpy<2",
     "pillow>=10",
+    # Autofocus / focus scoring (pylabrobot's evaluate_focus imports cv2).
+    # Headless build: the service has no GUI and the full opencv-python
+    # wheel drags in Qt.
+    "opencv-python-headless>=4.8",
     # NOTE: spinnaker_python (PySpin) is deliberately NOT declared here.
     # FLIR does not publish it to PyPI — it ships as a per-CPython-minor
     # wheel from Teledyne's portal, so no resolver can fetch it, and
