@@ -14,13 +14,13 @@ It declares one `SkillDef` per `/control/*` verb the device exposes, so
 workflows can `await session.role("plate_reader").read_absorbance(...)` instead
 of hand-rolling HTTP.
 
-> **Currency.** Regenerated 2026-08-12 against the live device. The earlier
-> draft (`phase4_handoff.md`) predated the control-surface fixes and carried
-> arg ranges the device no longer accepts — absorbance from 200 nm, a `gain`
-> on the reads, focal height from 0 mm. Applying it now would produce a
-> catalog that lets the SDK build requests the device rejects with 422. If you
-> are reading a copy older than this line, re-derive from
-> `agilent_cytation_server/control_args.py`, which is the source of truth.
+> **Currency.** Applied 2026-08-19 against the live device OpenAPI
+> (`GET :8040/openapi.json`). The earlier catalog in `ac-organic-lab`
+> predated the control-surface fixes and carried arg ranges the device
+> no longer accepts — absorbance from 200 nm, a `gain` on the reads,
+> focal height from 0 mm. That catalog would let the SDK build requests
+> the device rejects with 422. Source of truth remains
+> `agilent_cytation_server/control_args.py`.
 
 The patch has four parts:
 
@@ -29,11 +29,12 @@ The patch has four parts:
 3. An `equipment.yaml` flip to `protocol: "1.2"`, removing `do_not_call_connect`.
 4. A registration test.
 
-**Sequencing.** Hardware verification per [`IMPLEMENTATION.md`](IMPLEMENTATION.md)
-should land **first**: removing `do_not_call_connect` is what lets the SDK start
-issuing real `/control/*` calls, and the read path has not yet completed on
-hardware. Imaging, incubator and shaker are verified; the three `read.*` verbs
-are not.
+**Sequencing.** Applied 2026-08-19. `do_not_call_connect` was already
+gone from `equipment.yaml` (`protocol: "1.2"`). Hardware verification
+per [`IMPLEMENTATION.md`](IMPLEMENTATION.md) is still open for the
+`read.*` path; the catalog no longer blocks SDK calls from being
+issued. Imaging, incubator and shaker are verified; treat the three
+`read.*` verbs as live-but-unverified on a real plate.
 
 ---
 

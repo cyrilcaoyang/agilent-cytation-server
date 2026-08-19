@@ -1,6 +1,6 @@
 # Handoff — current state
 
-**Last updated 2026-08-12.** If you are picking this repo up cold, read this
+**Last updated 2026-08-19.** If you are picking this repo up cold, read this
 first, then [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) for what still
 needs bench time and [`RUNBOOK.md`](RUNBOOK.md) for day-to-day operations.
 
@@ -64,11 +64,9 @@ instead of a 500.
 ## Still to do
 
 1. **Bench-verify the reads** — [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
-2. **Apply the skill-catalog patch** — [`docs/LABSKILLS.md`](docs/LABSKILLS.md).
-   It can go in from this PC (the `ac-organic-lab/` checkout shares the central
-   server's remote) or from the central server. Sequenced *after* step 1, because
-   removing `do_not_call_connect` is what lets the SDK start issuing real
-   `/control/*` calls.
+2. ~~**Apply the skill-catalog patch**~~ — applied 2026-08-19 in
+   `ac-organic-lab`: 15 SkillDefs matching the live OpenAPI, plus a typed
+   `PlateReaderClient`. See [`docs/LABSKILLS.md`](docs/LABSKILLS.md).
 3. **Decide on filter cubes** if fluorescence imaging matters. Nothing in
    software unblocks it.
 4. **Watch pylabrobot v1** — PR #1000 restructures the machine interfaces and
