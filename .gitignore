@@ -16,6 +16,10 @@ config.toml
 # Persisted PyLabRobot Deck snapshot (Phase 2 — sample tracking)
 state.json
 
+# Captured images are run data: the lab contract keeps measurements and
+# images out of git entirely — they stay on the device PC and in AnaliticaDB.
+captures/
+
 # IDE
 .vscode/
 .idea/
