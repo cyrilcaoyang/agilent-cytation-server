@@ -257,3 +257,32 @@ def test_install_patches_and_is_idempotent() -> None:
         plr_ftdi.Device = original_device
         plr_ftdi.FTDI._resolve_device_serial = original_resolve
         plr_ftdi._d2xx_installed = False
+
+
+# ---------------------------------------------------------------------------
+# Short writes
+# ---------------------------------------------------------------------------
+
+
+def test_short_write_is_completed_not_silently_truncated(dev) -> None:
+    """FT_Write may report fewer bytes than requested.
+
+    The BioTek protocol checksums every command, so a truncated write does not
+    fail at the transport — it earns a NAK several layers up, surfacing as an
+    instrument-state error. The shim must finish the write.
+    """
+    chunks: list[bytes] = []
+
+    def short_write(data: bytes) -> int:
+        chunks.append(data)
+        return min(3, len(data))  # driver accepts at most 3 bytes at a time
+
+    dev._handle.write = short_write
+    assert dev.write(b"0123456789") == 10
+    assert b"".join(c[:3] for c in chunks) == b"0123456789"
+
+
+def test_stalled_write_raises_rather_than_looping_forever(dev) -> None:
+    dev._handle.write = lambda data: 0
+    with pytest.raises(OSError, match="no progress"):
+        dev.write(b"payload")

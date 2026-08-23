@@ -272,9 +272,26 @@ class D2xxDevice:
         return h.read(min(num_bytes, available))
 
     def write(self, data: bytes) -> int:
-        written = self.handle.write(data)
-        # FT_Write reports the count; older wrappers return None on success.
-        return len(data) if written is None else int(written)
+        """Write every byte, or raise.
+
+        FT_Write may report a short write. The BioTek protocol appends a
+        checksum to each command, so a silently truncated write does not fail
+        loudly — it earns a NAK from the instrument several layers up, where it
+        looks like an instrument-state problem rather than a transport one.
+        """
+        h = self.handle
+        total = 0
+        remaining = data
+        while remaining:
+            written = h.write(remaining)
+            n = len(remaining) if written is None else int(written)
+            if n <= 0:
+                raise OSError(
+                    f"FT_Write made no progress after {total} of {len(data)} bytes"
+                )
+            total += n
+            remaining = remaining[n:]
+        return total
 
     # ---- baudrate ----------------------------------------------------
     @property
