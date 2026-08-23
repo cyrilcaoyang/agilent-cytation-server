@@ -68,8 +68,11 @@ def main() -> int:
         print(f"FAIL  resolved {serial!r}, expected {EXPECTED_SERIAL!r}")
         return 1
 
-    dev = check("open device", lambda: D2xxDevice(device_id=EXPECTED_SERIAL) and None)
+    # Open exactly once. An earlier version opened inside check() and then
+    # again for the body; the first handle was never closed, so the second
+    # FT_OpenEx hit a device D2XX still had open and failed DEVICE_NOT_OPENED.
     dev = D2xxDevice(device_id=EXPECTED_SERIAL)
+    print(f"PASS  open device -> {EXPECTED_SERIAL}")
     try:
         # The exact configuration sequence the BioTek backend issues at setup.
         check("set baudrate 38400", lambda: setattr(dev, "baudrate", 38400))
