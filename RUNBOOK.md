@@ -296,6 +296,14 @@ Use this when you want PyLabRobot to drive the Cytation for real (orchestrator r
 > `{88bae032-…}`) rather than `libusbk devices` (`{ecfb0cfd-…}`). Either is
 > fine — libusb drives both. Verify by the service reaching `ready`, not by
 > the class name.
+>
+> **This whole section may become unnecessary.** `ftd2xx_shim.py` drives the
+> reader through FTDI's vendor driver instead of libusb, so the chip never
+> needs a libusbK bind and Gen5 can share it — switching stacks becomes
+> `nssm stop cytation`. Enable with `[instrument].ftdi_transport = "d2xx"`.
+> Unit-tested, **not yet bench-verified**; the checklist is in
+> [`docs/GEN5_ABSORBANCE.md`](docs/GEN5_ABSORBANCE.md) §6. If it holds, §4 and
+> §5 become historical.
 
 ### 4.1 Pre-flight
 

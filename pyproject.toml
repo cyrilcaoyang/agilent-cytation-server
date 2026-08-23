@@ -47,6 +47,16 @@ windows = [
     # pylabrobot.io.ftdi (Cytation 5 backend) imports pylibftdi.
     "pylibftdi>=0.20; sys_platform == 'win32'",
 ]
+d2xx = [
+    # Alternative FTDI transport: drives the reader through FTDI's own vendor
+    # driver instead of libusb, so the chip no longer has to be Zadig-bound to
+    # libusbK and Gen5 can share it. Enable with
+    # `[instrument].ftdi_transport = "d2xx"`; see docs/GEN5_ABSORBANCE.md.
+    #
+    # The DLL itself (ftd2xx.dll) ships with FTDI's CDM driver and is already
+    # present wherever Gen5 runs - only the Python wrapper is needed here.
+    "ftd2xx>=1.3; sys_platform == 'win32'",
+]
 imaging = [
     # The microscopy path. numpy is what pylabrobot's `_acquire_image`
     # hands back; pillow is what turns that array into a PNG on disk.

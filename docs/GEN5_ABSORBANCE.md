@@ -216,7 +216,71 @@ nothing measurable. **Take `Sweep`/1/0.**
 
 ---
 
-## 6. Scripts
+## 6. Escaping the driver swap — the D2XX transport
+
+Everything in §1–§5 was gated on the reader link being bound to the *right*
+driver, and RUNBOOK §4 documents why getting back is GUI-only. `ftd2xx_shim.py`
+removes that constraint rather than automating around it.
+
+**The idea.** PyLabRobot reaches the reader through `pylabrobot.io.ftdi.FTDI`,
+which wraps `pylibftdi.Device` and therefore **libusb** — and on Windows libusb
+needs libusbK/WinUSB bound, which is exactly what hides the chip from Gen5.
+FTDI's **D2XX** API talks *through* the vendor driver instead. With the D2XX
+transport the reader stays on FTDI permanently, both stacks coexist at the
+driver level, and switching between them becomes `nssm stop cytation` — no
+Zadig, no `pnputil`, no GUI, and therefore remotely operable by `sdl-lab-hostops`.
+
+**The surface is small.** `FTDI` touches `pylibftdi.Device` through six device
+members and nine `ftdi_fn` entry points, of which the BioTek backend exercises
+twelve. So the shim substitutes that one object rather than reimplementing the
+transport. It also replaces `FTDI._resolve_device_serial`, which is half the
+payoff: the stock version enumerates with pyusb, cannot open a
+vendor-driver-bound device, and aborts with `NotImplementedError: Operation not
+supported` — the error a Gen5-mode reader produces today. D2XX enumerates via
+`FT_CreateDeviceInfoList`, which works *because* the vendor driver is bound.
+
+Two mappings needed care and are covered by tests:
+
+- **Return convention.** libftdi returns `0`/`-1` and `FTDI` checks it; ftd2xx
+  raises. Every wrapper translates, so a driver error surfaces as `-1` rather
+  than escaping as a crash.
+- **Read semantics.** D2XX's read blocks until the byte count is satisfied;
+  libftdi returns what is buffered. The BioTek backend runs its own
+  `_read_until` timeout loop and depends on the latter, so the shim reads
+  `min(requested, FT_GetQueueStatus())` and returns `b""` on an empty queue.
+
+libftdi's 1.5-stop-bit value has no D2XX equivalent and is refused with `-1`
+rather than silently landing on `STOP_BITS_2` and mis-framing every byte. Flow
+control needs no remap — libftdi's `SIO_*_HS` constants are byte-identical to
+D2XX's `FLOW_*`.
+
+**Enabling it:** `uv pip install ftd2xx` (extra: `d2xx`; the DLL itself ships
+with FTDI's CDM driver and is already on any PC running Gen5), then
+`[instrument].ftdi_transport = "d2xx"`. Default stays `"libusb"`.
+
+### Bench verification — NOT YET DONE
+
+The 22 unit tests verify the *mapping* against a fake handle. They cannot
+verify it against a reader, because **D2XX cannot see the chip while it is
+bound to libusbK/WinUSB** — `createDeviceInfoList()` returned 0 on this PC for
+exactly that reason. Before trusting it:
+
+1. Swap the reader to FTDI (RUNBOOK §5 — scriptable, no GUI).
+2. `python -c "from agilent_cytation_server.ftd2xx_shim import list_devices; print(list_devices())"`
+   — expect the reader's serial. This alone proves the premise.
+3. Set `ftdi_transport = "d2xx"`, restart, confirm `/status` reaches `ready`
+   with all components connected.
+4. Drive one real read and one `imaging.capture`; compare against the values in
+   `captures/20260823T1804_fullplate_sweep_gen5/`.
+5. With the service running, confirm Gen5 can still connect — that is the whole
+   point, and the one thing no unit test can establish.
+
+If step 5 holds, RUNBOOK §4/§5 become historical and the `[instrument]` default
+should flip.
+
+---
+
+## 7. Scripts
 
 - `scripts/gen5_full_sweep.py` — the full sweep. One experiment per batch,
   procedure verified after being set, raw data drained in a loop,

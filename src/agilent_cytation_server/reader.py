@@ -215,7 +215,19 @@ class CytationReader:
                 "Install with `uv sync --extra plr --extra windows`."
             ) from exc
 
-        _patch_pylabrobot_ftdi_enumeration()
+        # `[instrument].ftdi_transport = "d2xx"` drives the reader through
+        # FTDI's vendor driver instead of libusb, which removes the Zadig swap
+        # in RUNBOOK §4/§5 entirely — Gen5 and this service then coexist and
+        # switching is a service stop. Defaults to "libusb" (the shipped,
+        # bench-verified path); see docs/GEN5_ABSORBANCE.md.
+        transport = str(_config.get("instrument", "ftdi_transport", "libusb")).lower()
+        if transport == "d2xx":
+            from .ftd2xx_shim import install as _install_d2xx
+
+            _install_d2xx()
+            logger.info("FTDI transport: D2XX (vendor driver; no libusbK bind needed)")
+        else:
+            _patch_pylabrobot_ftdi_enumeration()
 
         backend_kwargs: dict[str, Any] = {}
         if self.usb_serial:

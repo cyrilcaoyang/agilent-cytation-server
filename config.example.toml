@@ -15,6 +15,19 @@ backend = "cytation5"
 # Optional: lock onto a specific Cytation if multiple are present.
 # Leave empty to let PyLabRobot enumerate automatically.
 usb_serial = ""
+# How to reach the FTDI chip.
+#
+#   "libusb" (default) - PyLabRobot's stock path via pylibftdi. Requires the
+#                        chip to be Zadig-bound to libusbK/WinUSB, which makes
+#                        it invisible to Gen5 (RUNBOOK §4/§5 driver swap).
+#   "d2xx"             - FTDI's vendor driver via the ftd2xx package. No Zadig
+#                        bind, and Gen5 can use the same chip - switching
+#                        becomes `nssm stop cytation` rather than a driver
+#                        swap. Needs `uv pip install ftd2xx` (extra: d2xx).
+#
+# NOT YET BENCH-VERIFIED - see docs/GEN5_ABSORBANCE.md before switching a
+# production reader.
+ftdi_transport = "libusb"
 
 [imaging]
 # Set false on a Cytation 5 without the microscopy module so the
