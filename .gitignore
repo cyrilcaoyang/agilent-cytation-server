@@ -31,6 +31,7 @@ captures/
 # PDFs and Gen5 protocol files are vendor-copyrighted — keep them under
 # docs/vendor/ on the lab PC only, never push to GitHub.
 docs/vendor/
+docs/manuals/*.pdf
 docs/protocols/*.prt
 docs/protocols/*.exp
 
