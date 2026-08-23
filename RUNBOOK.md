@@ -263,13 +263,32 @@ Use this when you want PyLabRobot to drive the Cytation for real (orchestrator r
 > No Zadig, and **no physical cable pull** (`pnputil /scan-devices` replaces
 > the replug in §5.3 step 6, which matters when you are on Remote Desktop):
 >
+> **Look the package name up from the device — never hardcode it.** The
+> `oemNN.inf` number is assigned when a package enters the driver store, so it
+> differs per machine, and a PC that has been swapped a few times accumulates
+> several *unbound* `cytation5.inf` packages. Deleting a stale one succeeds,
+> reports "Driver package uninstalled", and changes nothing — which is exactly
+> what happened on 2026-08-23 (`oem41.inf` was the old libusbK package;
+> `oem47.inf`, WinUSB, was the one actually bound).
+>
 > ```powershell
 > C:\SDL_Tools\nssm.exe stop cytation
-> mkdir C:\SDL_Tools\libusbk_cytation_backup           # /export-driver fails if it does not exist
-> pnputil /export-driver oem41.inf C:\SDL_Tools\libusbk_cytation_backup
-> pnputil /delete-driver oem41.inf /uninstall /force   # = the "delete driver software" checkbox
-> pnputil /scan-devices                                # = the cable replug
+>
+> # The bound package is the `Driver Name` on the device's own entry:
+> pnputil /enum-devices /connected | Select-String -Context 0,6 VID_0403
+> $pkg = "oemNN.inf"        # <- from that output, NOT from this doc
+>
+> mkdir C:\SDL_Tools\libusbk_cytation_backup   # /export-driver fails if it does not exist
+> pnputil /export-driver $pkg C:\SDL_Tools\libusbk_cytation_backup   # want: Exported: 1
+> pnputil /delete-driver $pkg /uninstall /force  # = the "delete driver software" checkbox
+> pnputil /scan-devices                          # = the cable replug
+>
+> # Confirm it actually moved - "USB Serial Converter" / class USB, not USBDevice:
+> pnputil /enum-devices /connected | Select-String -Context 0,6 VID_0403
 > ```
+>
+> That last confirmation is not optional. Deleting an unbound package looks
+> identical to success until you check the device's class.
 >
 > **This direction (§4) is not.** `pnputil /add-driver <inf> /install` only
 > *offers* the package; it cannot force a device onto it, and `ftdibus.inf`
