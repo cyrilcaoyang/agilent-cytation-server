@@ -51,6 +51,7 @@ from typing import Any
 
 from . import config as _config
 from .errors import CameraNotReady, PlateNotLoaded
+from .models import TEMPERATURE_MAX_C, TEMPERATURE_MIN_C
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +223,19 @@ class CytationReader:
 
         # `CytationBackend`, not the `Cytation5Backend` alias: the latter is
         # deprecated upstream and only exists to emit a FutureWarning.
-        backend = CytationBackend(**backend_kwargs)
+        #
+        # The subclass exists solely to correct `temperature_range`. Upstream
+        # hardcodes (4.0, 45.0) for every Cytation — `supports_cooling` returns
+        # True unconditionally and 45.0 is commented "default BioTek max" — and
+        # `CytationBackend.set_temperature` validates against that property. So
+        # without this, the driver refuses setpoints this instrument accepts.
+        # The real limits come from the unit itself; see models.py.
+        class _RangeCorrectedBackend(CytationBackend):  # type: ignore[misc,valid-type]
+            @property
+            def temperature_range(self) -> tuple[float | None, float | None]:
+                return (TEMPERATURE_MIN_C, TEMPERATURE_MAX_C)
+
+        backend = _RangeCorrectedBackend(**backend_kwargs)
         self._backend = backend
         self._reader = PlateReader(
             name="cytation_5",
@@ -1152,7 +1165,9 @@ class StubCytationReader:
     # ---- incubator ---------------------------------------------------
 
     def temperature_range(self) -> tuple[float | None, float | None]:
-        return (4.0, 45.0)
+        # Same range the real reader reports, so dry-run refuses exactly what
+        # production refuses — the whole point of the stub.
+        return (TEMPERATURE_MIN_C, TEMPERATURE_MAX_C)
 
     async def set_temperature(self, celsius: float) -> None:
         self._require_connected()

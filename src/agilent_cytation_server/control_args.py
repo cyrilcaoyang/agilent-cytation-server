@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from .models import WellSample
+from .models import TEMPERATURE_MAX_C, TEMPERATURE_MIN_C, WellSample
 
 
 # ---------------------------------------------------------------------------
@@ -103,10 +103,10 @@ class ReadResponse(BaseModel):
 
 
 class TemperatureArgs(_StrictArgs):
-    # Bounds are the driver's (4-45 C). Note the driver assumes every Cytation
-    # can cool, which is what produces the 4 C floor — a low setpoint may be
-    # accepted and then ignored by a unit with no cooling fitted.
-    celsius: float = Field(..., ge=4.0, le=45.0)
+    # Bounds are the instrument's own, read via Gen5 GetReaderCharacteristics
+    # — see TEMPERATURE_MIN_C / TEMPERATURE_MAX_C in models.py. They used to be
+    # PyLabRobot's assumed (4, 45), which was wrong at both ends.
+    celsius: float = Field(..., ge=TEMPERATURE_MIN_C, le=TEMPERATURE_MAX_C)
 
 
 class ShakeArgs(_StrictArgs):
