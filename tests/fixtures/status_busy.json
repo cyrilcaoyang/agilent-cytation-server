@@ -1,6 +1,6 @@
 {
   "activity": "running",
-  "activity_since": "2026-08-13T02:55:53.436454Z",
+  "activity_since": "2026-04-29T22:50:01Z",
   "allowed_actions": [
     "claim",
     "heartbeat",
@@ -65,8 +65,8 @@
     "plate_in_reader": false,
     "readback_age_s": 0.0,
     "temperature_range_c": {
-      "max": 45.0,
-      "min": 4.0
+      "max": 65.0,
+      "min": 18.0
     }
   },
   "device_time": "2026-04-29T22:50:01Z",

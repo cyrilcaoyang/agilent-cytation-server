@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from agilent_cytation_server.api import create_app
 from agilent_cytation_server.models import PROTOCOL_VERSION
+from agilent_cytation_server.plate_state import PlateStateStore
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -152,26 +153,37 @@ def test_status_always_200_when_disconnected() -> None:
 # ---------------------------------------------------------------------------
 
 
+_STAMP = "2026-04-29T22:50:01Z"
+
+
 def _scrub_for_diff(body: dict) -> dict:
     """Replace runtime-volatile fields with stable placeholders so the
-    saved fixtures only diff when schema or value semantics change."""
-    body["device_time"] = "2026-04-29T22:50:01Z"
+    saved fixtures only diff when schema or value semantics change.
+
+    ``activity_since`` is here because it is stamped at the moment the span
+    changed, so it is fresh on every run — leaving it unscrubbed rewrote all
+    four fixtures on every pytest invocation.
+    """
+    body["device_time"] = _STAMP
     body["uptime_seconds"] = 0.0
     body["host"] = "cytation-pc"
+    if body.get("activity_since"):
+        body["activity_since"] = _STAMP
     for metric in body.get("metrics", {}).values():
         if metric.get("timestamp"):
-            metric["timestamp"] = "2026-04-29T22:50:01Z"
-        # Coerce volatile numeric metrics to deterministic baselines so
-        # the fixture only diffs on schema changes.
-        if "value" in metric:
-            label_metrics_volatile = {"last_read_seconds_ago"}
-        # (no-op placeholder — keep structure for readability)
+            metric["timestamp"] = _STAMP
+    # Seconds-since-last-read counts up in real time; pin it so the fixture
+    # only diffs on schema changes.
     if "last_read_seconds_ago" in body.get("metrics", {}):
         body["metrics"]["last_read_seconds_ago"]["value"] = 0.0
+    # Age of the cached readback — a sub-second float that differs on every
+    # run (0.0 vs 0.016), so it has to be pinned like the timestamps above.
+    if body.get("details", {}).get("readback_age_s") is not None:
+        body["details"]["readback_age_s"] = 0.0
     return body
 
 
-def test_save_status_fixtures() -> None:
+def test_save_status_fixtures(plate_state: PlateStateStore) -> None:
     """Re-generate ``tests/fixtures/status_*.json``.
 
     Fixtures are checked into git so reviewers can eyeball schema
@@ -183,11 +195,17 @@ def test_save_status_fixtures() -> None:
       - status_requires_init.json   — reader stopped post-startup
       - status_ready.json           — stub reader, dry_run=False
       - status_busy.json            — stub reader with _busy_state=True
+
+    Takes the ``plate_state`` fixture so the snapshots are built against an
+    isolated, empty ``PlateStateStore``. Without it ``create_app`` falls back
+    to ``[plates].state_path`` (``./state.json``), and on the lab PC that is
+    the *live* store — which baked a real 96-well plate into all four fixtures
+    on 2026-08-23.
     """
     FIXTURES.mkdir(exist_ok=True)
 
     # ---- dry_run ----------------------------------------------------------
-    app = create_app(dry_run=True)
+    app = create_app(dry_run=True, plate_state=plate_state)
     with TestClient(app) as alt:
         body = alt.get("/status").json()
         assert body["equipment_status"] == "dry_run"
@@ -209,7 +227,7 @@ def test_save_status_fixtures() -> None:
     # state machine (ready / busy) is exercised --------------------------
     from agilent_cytation_server.reader import StubCytationReader
 
-    app = create_app(dry_run=False)
+    app = create_app(dry_run=False, plate_state=plate_state)
     # Inject the stub via reader_factory so `is_connected()` flips to True
     # under the real state machine.
     app.state.service._reader_factory = StubCytationReader
