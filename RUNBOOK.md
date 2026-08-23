@@ -255,6 +255,48 @@ versions; check `inspect.signature(CytationBackend.__init__)`.
 
 Use this when you want PyLabRobot to drive the Cytation for real (orchestrator runs, dashboard reaches `equipment_status: ready`, real `/control/*` measurements).
 
+> **The swap is not symmetric. This direction needs a GUI; the other one does not.**
+> Learned the slow way on 2026-08-23.
+>
+> **§5 (libusbK → FTDI) is fully scriptable** — delete the libusbK package,
+> rescan, and Plug-and-Play falls back to the FTDI vendor driver on its own.
+> No Zadig, and **no physical cable pull** (`pnputil /scan-devices` replaces
+> the replug in §5.3 step 6, which matters when you are on Remote Desktop):
+>
+> ```powershell
+> C:\SDL_Tools\nssm.exe stop cytation
+> mkdir C:\SDL_Tools\libusbk_cytation_backup           # /export-driver fails if it does not exist
+> pnputil /export-driver oem41.inf C:\SDL_Tools\libusbk_cytation_backup
+> pnputil /delete-driver oem41.inf /uninstall /force   # = the "delete driver software" checkbox
+> pnputil /scan-devices                                # = the cable replug
+> ```
+>
+> **This direction (§4) is not.** `pnputil /add-driver <inf> /install` only
+> *offers* the package; it cannot force a device onto it, and `ftdibus.inf`
+> outranks the libwdi-generated package every time (WHQL-signed vs
+> self-signed). So `/scan-devices` leaves the device on FTDI and the service
+> comes up `requires_init` with:
+>
+> ```
+> No FTDI devices matched device_id='<serial>'. Skipped 1 unopenable device(s):
+> ['0403:6001 (NotImplementedError: Operation not supported or unimplemented on this platform)']
+> ```
+>
+> That is §3.3 — libusb cannot open a device held by the FTDI vendor driver.
+> Use Zadig (§4.3) or Device Manager → Update driver → *Let me pick* → **Have
+> Disk** → `C:\Users\sdl2\usb_driver\Cytation5.inf`. Neither needs a replug.
+>
+> Two things that make §4.3 quicker on this PC: there is exactly **one** FTDI
+> device (`USB\VID_0403&PID_6001\23030927`, the reader), so the unplug-to-
+> identify step is unnecessary; and Zadig's original generated package is
+> preserved at `C:\Users\sdl2\usb_driver\`, so the `/export-driver` backup
+> above is belt-and-braces rather than the only copy.
+>
+> The device may come back under class **`USBDevice`** (WinUSB,
+> `{88bae032-…}`) rather than `libusbk devices` (`{ecfb0cfd-…}`). Either is
+> fine — libusb drives both. Verify by the service reaching `ready`, not by
+> the class name.
+
 ### 4.1 Pre-flight
 
 ```powershell
@@ -367,6 +409,14 @@ notepad C:\Users\sdl2\Projects\agilent-cytation-server\config.toml
 ```
 
 ### 5.3 Uninstall libusbK from the Cytation device
+
+> **Prefer the `pnputil` route in the §4 note** — same result, no GUI, and no
+> cable pull, which is the only way this works over Remote Desktop. The
+> Device Manager steps below are the fallback when you are at the machine.
+> Whichever you use, **make the export directory first**: `/export-driver`
+> fails with "Missing or invalid target directory" if it does not exist, and
+> the `/delete-driver` on the next line will happily proceed anyway, leaving
+> you with no backup.
 
 1. Open **Device Manager** (`devmgmt.msc`) — Run as Administrator if you are not already.
 2. Expand the **`libusbK USB Devices`** branch (visible only after a libusbK-bound device is plugged in).
