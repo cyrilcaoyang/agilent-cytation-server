@@ -281,11 +281,29 @@ driver and **no libusbK bind anywhere**:
   | D7 | 1.563 | 1.57 |
   | A12 | 0.0861 | ~0.08 |
 
-Still open: **step 5 — confirm Gen5 can connect while the service holds the
-device.** Both go through the vendor driver, but D2XX takes exclusive ownership
-on open. If they cannot share, the win is smaller than hoped: still no driver
-swap, but you stop the service to use Gen5 — a `nssm stop` rather than a Zadig
-session, so still far better than §4/§5.
+**Step 5, answered: they cannot share, but they no longer have to swap.**
+D2XX takes the device exclusively on open. With the service running, Gen5
+connects and reports `Serial Number: 23030927, Status: Ready` — both from its
+*stored* reader config — while `Temperature: ???` shows it is not actually
+communicating. Stop the service and Gen5 reads temperature immediately. The
+service is unaffected throughout: it stayed `ready` with a 0.0 s-old readback
+while Gen5 was attempting to connect.
+
+**Operational hazard worth knowing:** Gen5's status line lies. Serial and
+"Ready" come from configuration, not from the instrument. **Temperature is the
+honest indicator** — `???` means Gen5 does not have the reader, whatever the
+status line says.
+
+So the final shape is:
+
+| | before | with D2XX |
+|---|---|---|
+| PyLabRobot → Gen5 | `pnputil` delete + rescan | `nssm stop cytation` |
+| Gen5 → PyLabRobot | **Zadig / Device Manager, GUI-only** | `nssm start cytation` |
+| remotely operable | no | yes (hostops, `cytation` is restartable) |
+
+Not the full prize — concurrent access would have been better — but it turns a
+20-minute GUI procedure with a GUI-only return leg into two service commands.
 
 ### Unrelated bug found on the way: column 1 is unreadable via PyLabRobot
 

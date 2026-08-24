@@ -316,13 +316,25 @@ Use this when you want PyLabRobot to drive the Cytation for real (orchestrator r
 > fine — libusb drives both. Verify by the service reaching `ready`, not by
 > the class name.
 >
-> **This whole section may become unnecessary.** `ftd2xx_shim.py` drives the
-> reader through FTDI's vendor driver instead of libusb, so the chip never
-> needs a libusbK bind and Gen5 can share it — switching stacks becomes
-> `nssm stop cytation`. Enable with `[instrument].ftdi_transport = "d2xx"`.
-> Unit-tested, **not yet bench-verified**; the checklist is in
-> [`docs/GEN5_ABSORBANCE.md`](docs/GEN5_ABSORBANCE.md) §6. If it holds, §4 and
-> §5 become historical.
+> **§4 and §5 are historical on this PC.** Since 2026-08-23 the reader runs on
+> `[instrument].ftdi_transport = "d2xx"`, which drives it through FTDI's vendor
+> driver instead of libusb — so the chip never needs a libusbK bind, and there
+> is nothing to swap in either direction. **Read the two sections below only if
+> you are reverting to the libusb transport or bringing up a new PC.**
+>
+> Switching between PyLabRobot and Gen5 is now:
+>
+> ```powershell
+> C:\SDL_Tools\nssm.exe stop cytation    # -> Gen5 can use the reader
+> C:\SDL_Tools\nssm.exe start cytation   # -> the service takes it back
+> ```
+>
+> They cannot hold it at once: D2XX opens the device exclusively. **Gen5's
+> status line will still show a serial and "Ready" from its stored config while
+> it is locked out — `Temperature: ???` is the honest indicator.**
+>
+> Verification evidence and the D2XX/Gen5 read cross-check are in
+> [`docs/GEN5_ABSORBANCE.md`](docs/GEN5_ABSORBANCE.md) §6.
 
 ### 4.1 Pre-flight
 

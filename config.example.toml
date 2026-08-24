@@ -25,8 +25,10 @@ usb_serial = ""
 #                        becomes `nssm stop cytation` rather than a driver
 #                        swap. Needs `uv pip install ftd2xx` (extra: d2xx).
 #
-# NOT YET BENCH-VERIFIED - see docs/GEN5_ABSORBANCE.md before switching a
-# production reader.
+# "d2xx" is RECOMMENDED and is what sdl2-pc-03-cytation runs: verified against
+# hardware 2026-08-23, with reads matching Gen5 to three decimals. The default
+# stays "libusb" only because d2xx needs the `d2xx` extra installed, and a fresh
+# box that lacks it should fail visibly at config rather than at startup.
 ftdi_transport = "libusb"
 
 [imaging]
