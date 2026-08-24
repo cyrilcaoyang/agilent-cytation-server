@@ -632,6 +632,31 @@ class CytationReader:
         except (ValueError, TypeError):
             logger.warning("Unparseable temperature reply %r", resp)
             return None
+        # A reply can be a leftover from a previous exchange rather than an
+        # answer to this query — the first read after `shake.stop` picks up the
+        # abort's tail and parses as 0.0 C (observed 2026-08-24, run
+        # solubility_60c). The instrument cannot report outside its own declared
+        # range, so anything outside it is desynchronised framing, not a
+        # measurement. Purge and ask once more.
+        lo, hi = TEMPERATURE_MIN_C, TEMPERATURE_MAX_C
+        if not (lo <= value <= hi):
+            logger.info(
+                "Discarding out-of-range temperature %.1f C (declared range "
+                "%.0f-%.0f); re-reading after a purge", value, lo, hi
+            )
+            backend = self._backend
+            try:
+                await backend.io.usb_purge_rx_buffer()
+                resp = await backend.send_command("h", timeout=timeout)
+                value = int(resp[1:-1]) / 100000
+            except Exception:
+                logger.warning("Temperature re-read after purge failed", exc_info=True)
+                return None
+            if not (lo <= value <= hi):
+                logger.warning(
+                    "Temperature still out of range after re-read (%.1f C)", value
+                )
+                return None
         self._last_temp_error = None
         return float(value)
 
