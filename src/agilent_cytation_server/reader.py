@@ -252,6 +252,11 @@ class CytationReader:
                 return (TEMPERATURE_MIN_C, TEMPERATURE_MAX_C)
 
         backend = _RangeCorrectedBackend(**backend_kwargs)
+        # Serialize every send_command so the shaker's 16-minute re-trigger
+        # cannot interleave with a temperature read. See link_lock.py.
+        from .link_lock import install as _install_link_lock
+
+        _install_link_lock(backend)
         self._backend = backend
         self._reader = PlateReader(
             name="cytation_5",
@@ -568,12 +573,13 @@ class CytationReader:
         getter = getattr(self._backend, "get_current_temperature", None)
         if getter is None:
             return None
-        # Never issue instrument I/O while the shake task owns the link:
-        # `send_command` has no internal lock, so two concurrent callers
-        # interleave writes and steal each other's replies. A stale reading
-        # (with `readback_age_s` saying so) beats a corrupted exchange.
-        if self.is_shaking():
-            return None
+        # Reading while the shaker runs used to be refused outright, because
+        # `send_command` has no internal lock and two concurrent callers steal
+        # each other's replies. That cost the 2026-08-21 solubility run every
+        # temperature sample of its six-hour heated phase. The link lock
+        # installed in `setup()` serializes the exchange instead, so the read is
+        # safe: the shake task holds the link for a second or two per
+        # 16-minute cycle and is idle the rest of the time.
         try:
             value = await getter()
         except Exception:  # pragma: no cover - hardware-specific

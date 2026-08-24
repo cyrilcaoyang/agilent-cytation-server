@@ -84,6 +84,8 @@ imaging = [
 ]
 dev = [
     "pytest>=7.0",
+    # link_lock's races are only expressible as async tests.
+    "pytest-asyncio>=0.23",
     "httpx>=0.27",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
@@ -101,5 +103,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Async tests (tests/test_link_lock.py) need no per-test marker.
+asyncio_mode = "auto"
 python_files = "test_*.py"
 addopts = "-q --tb=short"
