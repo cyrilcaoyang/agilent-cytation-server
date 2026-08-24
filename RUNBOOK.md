@@ -333,6 +333,22 @@ Use this when you want PyLabRobot to drive the Cytation for real (orchestrator r
 > status line will still show a serial and "Ready" from its stored config while
 > it is locked out — `Temperature: ???` is the honest indicator.**
 >
+> **The new failure mode — "Gen5 still has it".** This replaces the old
+> "wrong driver bound" failure, and is strictly better: recoverable in seconds,
+> no GUI, and diagnosable from `/status`. If the service comes up
+> `requires_init` after a start or restart:
+>
+> ```
+> last_error.message: A D2XX device is present but reports no serial or
+> description, so '23030927' could not be matched. ... almost always Gen5.
+> ```
+>
+> D2XX does not hide a device another process holds — it enumerates it with
+> **empty identity strings**, which is why this looks like a missing reader
+> until you know the signature. Fix: disconnect the reader in Gen5 (closing the
+> connection wizard is enough; the handle is held by the connection, not the
+> app window), then `nssm restart cytation`.
+>
 > Verification evidence and the D2XX/Gen5 read cross-check are in
 > [`docs/GEN5_ABSORBANCE.md`](docs/GEN5_ABSORBANCE.md) §6.
 

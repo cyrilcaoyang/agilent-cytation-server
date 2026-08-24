@@ -305,6 +305,12 @@ So the final shape is:
 Not the full prize — concurrent access would have been better — but it turns a
 20-minute GUI procedure with a GUI-only return leg into two service commands.
 
+The exclusivity has one failure mode worth recognising, and it is now in the
+error text: a device another process holds **still enumerates**, with empty
+serial and description, so `resolve_device_serial` cannot match it and the
+service comes up `requires_init`. Observed live 2026-08-23 with Gen5 still
+connected. Disconnect in Gen5, restart the service.
+
 ### Unrelated bug found on the way: column 1 is unreadable via PyLabRobot
 
 Any `read.absorbance` whose region includes **column 1** is refused instantly

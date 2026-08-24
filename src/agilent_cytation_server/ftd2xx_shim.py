@@ -330,6 +330,19 @@ def resolve_device_serial(device_id: str | None = None) -> str:
         for d in devices:
             if d["serial"] == device_id:
                 return str(d["serial"])
+        # A device that enumerates with an empty serial AND description is
+        # almost always one another process already holds open — in this lab,
+        # Gen5. D2XX opens exclusively, so its identity strings come back blank
+        # rather than the device disappearing, which reads like a missing
+        # reader unless you know the signature.
+        if any(not d["serial"] and not d["description"] for d in devices):
+            raise D2xxUnavailable(
+                f"A D2XX device is present but reports no serial or description, "
+                f"so {device_id!r} could not be matched. That is what an FTDI "
+                f"device already opened by another process looks like — on this "
+                f"PC, almost always Gen5. Disconnect the reader in Gen5 (or "
+                f"close it) and retry."
+            )
         raise D2xxUnavailable(
             f"No D2XX device with serial {device_id!r}. Visible: "
             + ", ".join(f"{d['serial']!r} ({d['description']!r})" for d in devices)

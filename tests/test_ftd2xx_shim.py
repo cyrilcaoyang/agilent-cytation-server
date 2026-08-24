@@ -286,3 +286,14 @@ def test_stalled_write_raises_rather_than_looping_forever(dev) -> None:
     dev._handle.write = lambda data: 0
     with pytest.raises(OSError, match="no progress"):
         dev.write(b"payload")
+
+
+def test_blank_identity_is_reported_as_another_process_holding_it(monkeypatch) -> None:
+    """D2XX does not hide a device another process has open — it enumerates it
+    with empty identity strings, which otherwise reads like a missing reader.
+    """
+    monkeypatch.setattr(
+        shim, "list_devices", lambda: [{"index": 0, "serial": "", "description": ""}]
+    )
+    with pytest.raises(shim.D2xxUnavailable, match="Gen5"):
+        shim.resolve_device_serial("23030927")
