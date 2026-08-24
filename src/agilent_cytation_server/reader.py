@@ -580,14 +580,60 @@ class CytationReader:
         # installed in `setup()` serializes the exchange instead, so the read is
         # safe: the shake task holds the link for a second or two per
         # 16-minute cycle and is idle the rest of the time.
-        try:
-            value = await getter()
-        except Exception:  # pragma: no cover - hardware-specific
-            logger.debug("Cytation get_current_temperature failed", exc_info=True)
+        #
+        # MEASURED 2026-08-24: the instrument does not answer the "h" query at
+        # all while it is shaking — not within 1 s (upstream's budget) and not
+        # within 5 s. Forcing it is worse than skipping it: every /status poll
+        # stalls for the whole timeout, and the reply that finally arrives is
+        # read as the *next* command's response, so the first reading after the
+        # shaker stops comes back garbage (observed: 0.0 C). This is firmware
+        # behaviour, not a locking problem — the link lock in `setup()` is still
+        # required, but it cannot make the instrument answer.
+        #
+        # To get a temperature series during a shaken incubation, the shaker has
+        # to be paused around the read. That is an actuation, so it belongs to
+        # workflow code, not to a side-effect-free /status poll (STATUS_SPEC §4
+        # best practice #1). See docs/GEN5_ABSORBANCE.md.
+        if self.is_shaking():
             return None
-        if isinstance(value, (int, float)):
-            return float(value)
-        return None
+        try:
+            return await self._read_temperature(self._temperature_timeout_s)
+        except Exception as exc:
+            # Never debug-only: a temperature that silently becomes None is
+            # exactly what hid the 2026-08-21 run's six-hour gap until the data
+            # was reviewed a day later.
+            if type(exc).__name__ != self._last_temp_error:
+                self._last_temp_error = type(exc).__name__
+                logger.warning(
+                    "Incubator temperature unreadable (%s: %s); /status will "
+                    "report no actual_temperature until it recovers",
+                    type(exc).__name__, exc,
+                )
+            return None
+
+    #: Budget for the "h" temperature query. Upstream uses 1 s, which the
+    #: instrument misses while shaking.
+    _temperature_timeout_s = 2.0
+    _last_temp_error: str | None = None
+
+    async def _read_temperature(self, timeout: float) -> float | None:
+        """Query the incubator directly.
+
+        The reply is ``\x06`` + hundred-thousandths of a degree + ``\x03`` —
+        e.g. ``b'\x062410000\x03'`` is 24.1 C. Same framing upstream parses;
+        only the timeout differs.
+        """
+        backend = self._backend
+        resp = await backend.send_command("h", timeout=timeout)
+        if resp is None:
+            return None
+        try:
+            value = int(resp[1:-1]) / 100000
+        except (ValueError, TypeError):
+            logger.warning("Unparseable temperature reply %r", resp)
+            return None
+        self._last_temp_error = None
+        return float(value)
 
     # ------------------------------------------------------------------
     # Incubator

@@ -756,7 +756,15 @@ class CytationService:
             incubator_state = "off"
         elif actual_temp is None:
             incubator_state = "unknown"
-            incubator_message = "Temperature readback unavailable"
+            # Say *why*. The instrument does not answer the temperature query
+            # while shaking (measured 2026-08-24), and a bare "unavailable"
+            # here is what made the 2026-08-21 run's six-hour gap look like a
+            # fault rather than a known limitation.
+            incubator_message = (
+                "Temperature not readable while shaking — pause the shaker to sample it"
+                if self._is_shaking()
+                else "Temperature readback unavailable"
+            )
         elif abs(actual_temp - self._setpoint_c) <= _TEMPERATURE_TOLERANCE_C:
             incubator_state = "at_setpoint"
         else:
