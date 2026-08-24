@@ -709,6 +709,138 @@ class CytationReader:
     # and timestamp we surface for traceability.
     # ------------------------------------------------------------------
 
+    # PyLabRobot builds each absorbance read command as
+    #
+    #   004701<min_row><min_col><max_row><max_col><fixed><wavelength>1<checksum>
+    #
+    # with ``checksum = sum(cmd.encode()) % 100``. The instrument **rejects the
+    # command whenever that value lands in 94..99**, ACKing the "O" start-read
+    # with status 2D06 instead of 0000, which surfaces as an AssertionError in
+    # `biotek_backend.read_absorbance`.
+    #
+    # Measured on serial 23030927, 2026-08-23. It is the checksum *value*, not
+    # the wells: A1 fails at 600 nm (checksum 97) and reads fine at 325 nm
+    # (checksum 01); C1 reads fine at 600 nm (01) and fails at 400 nm (99).
+    # A1 and A10 fail together because their digit sums coincide, though they
+    # sit at opposite ends of the row — so it cannot be geometry. Verified
+    # accepted: 00, 01-27, 40. Verified rejected: 94, 95, 96, 97, 98, 99.
+    # 41-93 are unreachable with a single-well region and remain untested.
+    _UNSAFE_CHECKSUMS = frozenset(range(94, 100))
+    _CMD_FIXED = "000120010000110010000010600008"
+
+    @classmethod
+    def _absorbance_checksum(
+        cls, min_row: int, min_col: int, max_row: int, max_col: int, wavelength: int
+    ) -> int:
+        base = (
+            f"004701{min_row + 1:02}{min_col + 1:02}{max_row + 1:02}{max_col + 1:02}"
+            f"{cls._CMD_FIXED}{wavelength:04d}1"
+        )
+        return sum(base.encode()) % 100
+
+    def _pad_for_checksum(self, well_objs: list[Any], wavelength: int) -> list[Any]:
+        """Grow any region whose command checksum the instrument would reject.
+
+        The checksum is a function of the region indices and the wavelength.
+        The wavelength is the measurement and cannot move, so the region is the
+        only free variable: extending a rectangle by one column shifts the digit
+        sum out of the rejected band. The extra wells are read and discarded.
+
+        Returns the original list unchanged when nothing needs padding, which is
+        the overwhelmingly common case (6 values out of 100).
+        """
+        plate = self._plate_resource()
+        if plate is None or self._backend is None:
+            return well_objs
+        try:
+            rects = self._backend._non_overlapping_rectangles(  # noqa: SLF001
+                (w.get_row(), w.get_column()) for w in well_objs
+            )
+        except Exception:  # pragma: no cover - upstream shape change
+            logger.debug("checksum padding skipped: could not compute regions", exc_info=True)
+            return well_objs
+
+        wanted: set[tuple[int, int]] = {(w.get_row(), w.get_column()) for w in well_objs}
+        padded = False
+        for min_row, min_col, max_row, max_col in rects:
+            if self._absorbance_checksum(min_row, min_col, max_row, max_col, wavelength) \
+                    not in self._UNSAFE_CHECKSUMS:
+                wanted.update(
+                    (r, c)
+                    for r in range(min_row, max_row + 1)
+                    for c in range(min_col, max_col + 1)
+                )
+                continue
+            grown = self._grow_region(
+                (min_row, min_col, max_row, max_col), wavelength, plate
+            )
+            if grown is None:
+                logger.warning(
+                    "No safe checksum found for region (%d,%d)-(%d,%d) at %d nm; "
+                    "the instrument will likely refuse this read",
+                    min_row, min_col, max_row, max_col, wavelength,
+                )
+                grown = (min_row, min_col, max_row, max_col)
+            else:
+                padded = True
+                logger.info(
+                    "Padded absorbance region (%d,%d)-(%d,%d) to (%d,%d)-(%d,%d) "
+                    "to avoid rejected checksum at %d nm",
+                    min_row, min_col, max_row, max_col, *grown, wavelength,
+                )
+            g_min_row, g_min_col, g_max_row, g_max_col = grown
+            wanted.update(
+                (r, c)
+                for r in range(g_min_row, g_max_row + 1)
+                for c in range(g_min_col, g_max_col + 1)
+            )
+
+        if not padded:
+            return well_objs
+        rows = "ABCDEFGH"
+        return [plate.get_item(f"{rows[r]}{c + 1}") for r, c in sorted(wanted)]
+
+    def _grow_region(
+        self, rect: tuple[int, int, int, int], wavelength: int, plate: Any
+    ) -> tuple[int, int, int, int] | None:
+        """Smallest expansion of ``rect`` whose checksum the instrument accepts.
+
+        Searches every rectangle that *contains* ``rect`` and fits the plate,
+        cheapest first (fewest extra wells read). Growing one edge at a time is
+        not enough — A1 at 400 nm has no safe single-edge expansion, but does
+        have a safe two-edge one.
+        """
+        min_row, min_col, max_row, max_col = rect
+        n_rows, n_cols = plate.num_items_y, plate.num_items_x
+        span = 4
+        candidates: list[tuple[int, tuple[int, int, int, int]]] = []
+        for up in range(min(span, min_row) + 1):
+            for down in range(min(span, n_rows - 1 - max_row) + 1):
+                for left in range(min(span, min_col) + 1):
+                    for right in range(min(span, n_cols - 1 - max_col) + 1):
+                        if not (up or down or left or right):
+                            continue
+                        cand = (
+                            min_row - up,
+                            min_col - left,
+                            max_row + down,
+                            max_col + right,
+                        )
+                        rows = cand[2] - cand[0] + 1
+                        cols = cand[3] - cand[1] + 1
+                        extra = rows * cols - (max_row - min_row + 1) * (max_col - min_col + 1)
+                        candidates.append((extra, cand))
+        for _, cand in sorted(candidates):
+            if self._absorbance_checksum(*cand, wavelength) not in self._UNSAFE_CHECKSUMS:
+                return cand
+        return None
+
+    def _plate_resource(self) -> Any:
+        try:
+            return self._reader.get_plate() if self._reader is not None else None
+        except Exception:
+            return None
+
     async def read_absorbance(
         self,
         *,
@@ -716,10 +848,16 @@ class CytationReader:
         wavelength_nm: float,
     ) -> dict[str, float]:
         well_objs = self._wells_for(wells)
+        wavelength = int(round(wavelength_nm))
+        # Padded read — see _pad_for_checksum. The grid PLR returns is
+        # plate-shaped, so reading extra wells costs a little time and changes
+        # nothing about the values; _grid_to_wells still selects by the
+        # originally requested wells.
+        read_objs = self._pad_for_checksum(well_objs, wavelength)
         result = await self._call_frontend(
             "read_absorbance",
-            wavelength=int(round(wavelength_nm)),
-            wells=well_objs,
+            wavelength=wavelength,
+            wells=read_objs,
             use_new_return_type=True,
         )
         return self._grid_to_wells(result[0]["data"], well_objs, wells)
