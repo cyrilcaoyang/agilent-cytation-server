@@ -311,45 +311,55 @@ serial and description, so `resolve_device_serial` cannot match it and the
 service comes up `requires_init`. Observed live 2026-08-23 with Gen5 still
 connected. Disconnect in Gen5, restart the service.
 
-### Unrelated bug found on the way: column 1 is unreadable via PyLabRobot
+### The instrument rejects absorbance checksums 94-99 (fixed)
 
-Any `read.absorbance` whose region includes **column 1** is refused instantly
-(HTTP 503, `assert resp == b"\x060000\x03"` at `biotek_backend.py:373` — the
-`"O"` start-read command NAKs). Anything else works:
+PyLabRobot builds each absorbance command as
 
 ```
-A1  REJECTED      A12  0.0861
-B1  REJECTED      H12  0.3838
-C5,D5,C7,D7       all fine
+004701<min_row><min_col><max_row><max_col><fixed><wavelength>1<checksum>
+checksum = sum(cmd.encode()) % 100
 ```
 
-**Not a transport fault.** Gen5 read A1 on this same plate the same evening
-(0.0906 at 450 nm), the plate geometry checks out (12x8, A1 at y=70.99, 9 mm
-pitch), and the command is index-based rather than coordinate-based — so the
-suspicion is PyLabRobot's partial-region command format at `min_col = 1`.
-Whether it reproduces on the libusb transport is **untested**; that needs a
-driver swap back, which is exactly what this shim exists to avoid.
+and **the instrument refuses it whenever that value lands in 94-99**: the `"O"`
+start-read ACKs with status `2D06` instead of `0000`, which `biotek_backend`
+turns into a bare `AssertionError` and this service reports as *"the reader was
+not in a state to run it"*. That message is wrong and cost an hour chasing
+plate state and stage position.
 
-Practical consequence today: full-plate work through PyLabRobot will fail until
-this is understood. Gen5 is unaffected.
+It is the checksum **value**, not the wells. Two observations settle it:
 
-The 22 unit tests verify the *mapping* against a fake handle. They cannot
-verify it against a reader, because **D2XX cannot see the chip while it is
-bound to libusbK/WinUSB** — `createDeviceInfoList()` returned 0 on this PC for
-exactly that reason. Before trusting it:
+- **Wavelength flips the outcome** on the same well at the same stage position,
+  and the wavelength digits feed nothing but the checksum:
 
-1. Swap the reader to FTDI (RUNBOOK §5 — scriptable, no GUI).
-2. `python -c "from agilent_cytation_server.ftd2xx_shim import list_devices; print(list_devices())"`
-   — expect the reader's serial. This alone proves the premise.
-3. Set `ftdi_transport = "d2xx"`, restart, confirm `/status` reaches `ready`
-   with all components connected.
-4. Drive one real read and one `imaging.capture`; compare against the values in
-   `captures/20260823T1804_fullplate_sweep_gen5/`.
-5. With the service running, confirm Gen5 can still connect — that is the whole
-   point, and the one thing no unit test can establish.
+  | | checksum | result |
+  |---|---|---|
+  | A1 @ 600 nm | 97 | rejected |
+  | A1 @ 325 nm | 01 | reads 0.3624 |
+  | C1 @ 600 nm | 01 | reads 0.0837 |
+  | C1 @ 400 nm | 99 | rejected |
 
-If step 5 holds, RUNBOOK §4/§5 become historical and the `[instrument]` default
-should flip.
+- **A1 and A10 fail together** despite sitting at opposite ends of row A. Their
+  digit sums coincide, so they share checksum 97. No positional theory survives.
+
+Verified accepted: 00, 01-27, 40. Verified rejected: 94, 95, 96, 97, 98, 99.
+41-93 are unreachable with a single-well region and remain untested, so the
+guard treats only 94-99 as unsafe.
+
+**Fix** (`reader.py::_pad_for_checksum`): the wavelength is the measurement and
+cannot move, so the region is the only free variable — grow the read rectangle
+until the checksum is accepted and discard the extra wells. PLR returns a
+plate-shaped grid, so no value changes, only the time. Single-edge growth is
+insufficient (A1 at 400 nm has no safe single-edge expansion), so the search
+covers every containing rectangle, cheapest first. Of 46176 (well, wavelength)
+pairs across 320-800 nm, **148 (0.3%) need padding and none are unreachable**;
+safe regions are returned untouched.
+
+Verified on hardware 2026-08-24 — every previously-failing combination now
+reads, matching the Gen5 sweep: A1 0.0841 (Gen5 0.084), A2 0.0810 (0.081),
+B1 0.0807 (0.081), A11 0.0805 (0.08), C5 2.5394 (2.525).
+
+This is a **workaround, not an explanation**: the correct checksum rule is still
+unknown, which is what an upstream report would need.
 
 ---
 
