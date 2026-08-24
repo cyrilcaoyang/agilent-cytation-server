@@ -224,8 +224,12 @@ class CytationReader:
         if transport == "d2xx":
             from .ftd2xx_shim import install as _install_d2xx
 
-            _install_d2xx()
-            logger.info("FTDI transport: D2XX (vendor driver; no libusbK bind needed)")
+            trace = bool(_config.get("instrument", "ftdi_trace", False))
+            _install_d2xx(trace=trace)
+            logger.info(
+                "FTDI transport: D2XX (vendor driver; no libusbK bind needed)%s",
+                " [TRACE ON]" if trace else "",
+            )
         else:
             _patch_pylabrobot_ftdi_enumeration()
 

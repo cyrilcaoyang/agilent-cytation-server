@@ -203,6 +203,12 @@ class D2xxDevice:
     READ_TIMEOUT_MS = 50
     WRITE_TIMEOUT_MS = 2000
 
+    #: Log every byte in and out at INFO. Diagnostic only — the BioTek protocol
+    #: is ASCII-framed with STX/ETX and a checksum, so seeing the raw exchange
+    #: is usually the difference between diagnosing a protocol fault and
+    #: guessing at it. Enabled by `[instrument].ftdi_trace = true`.
+    trace = False
+
     def __init__(
         self,
         *,
@@ -269,7 +275,10 @@ class D2xxDevice:
         available = h.getQueueStatus()
         if not available:
             return b""
-        return h.read(min(num_bytes, available))
+        data = h.read(min(num_bytes, available))
+        if self.trace and data:
+            logger.info("D2XX rx %s  %r", data.hex(), data)
+        return data
 
     def write(self, data: bytes) -> int:
         """Write every byte, or raise.
@@ -279,6 +288,8 @@ class D2xxDevice:
         loudly — it earns a NAK from the instrument several layers up, where it
         looks like an instrument-state problem rather than a transport one.
         """
+        if self.trace:
+            logger.info("D2XX tx %s  %r", data.hex(), data)
         h = self.handle
         total = 0
         remaining = data
@@ -332,7 +343,7 @@ def resolve_device_serial(device_id: str | None = None) -> str:
     return str(devices[0]["serial"])
 
 
-def install() -> None:
+def install(trace: bool = False) -> None:
     """Point ``pylabrobot.io.ftdi`` at D2XX instead of libusb.
 
     Monkeypatch rather than a fork, matching the existing
@@ -343,6 +354,7 @@ def install() -> None:
     if getattr(plr_ftdi, "_d2xx_installed", False):
         return
 
+    D2xxDevice.trace = trace
     plr_ftdi.Device = D2xxDevice  # type: ignore[attr-defined]
     # pylibftdi/pyusb presence is asserted in FTDI.__init__ before any device
     # work; with D2XX driving, neither is needed.

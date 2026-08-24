@@ -258,7 +258,56 @@ D2XX's `FLOW_*`.
 with FTDI's CDM driver and is already on any PC running Gen5), then
 `[instrument].ftdi_transport = "d2xx"`. Default stays `"libusb"`.
 
-### Bench verification — NOT YET DONE
+### Bench verification — DONE 2026-08-23, transport confirmed
+
+Verified on the real reader (serial 23030927) with the chip on FTDI's vendor
+driver and **no libusbK bind anywhere**:
+
+- `list_devices()` returns the reader — the premise. Under libusbK it returns
+  `[]`, which is what the exclusivity looks like from the D2XX side.
+- Every transport call passes: open, baudrate, line property, flow control,
+  latency timer, both purges, RTS, non-blocking read, close.
+- The service reaches `ready` with all five components connected, firmware
+  `2.09`, camera up with three objectives, and a live temperature refreshing
+  every ~2 s — all real command/response traffic through the vendor driver.
+- **Absorbance reads agree with the Gen5 sweep to three decimals**, which is
+  the check that matters, because it crosses both transports *and* both
+  software stacks:
+
+  | well | D2XX / PyLabRobot | Gen5 sweep |
+  |---|---|---|
+  | C5 | 2.5207 | 2.52 |
+  | D5 | 2.636 | 2.63 |
+  | D7 | 1.563 | 1.57 |
+  | A12 | 0.0861 | ~0.08 |
+
+Still open: **step 5 — confirm Gen5 can connect while the service holds the
+device.** Both go through the vendor driver, but D2XX takes exclusive ownership
+on open. If they cannot share, the win is smaller than hoped: still no driver
+swap, but you stop the service to use Gen5 — a `nssm stop` rather than a Zadig
+session, so still far better than §4/§5.
+
+### Unrelated bug found on the way: column 1 is unreadable via PyLabRobot
+
+Any `read.absorbance` whose region includes **column 1** is refused instantly
+(HTTP 503, `assert resp == b"\x060000\x03"` at `biotek_backend.py:373` — the
+`"O"` start-read command NAKs). Anything else works:
+
+```
+A1  REJECTED      A12  0.0861
+B1  REJECTED      H12  0.3838
+C5,D5,C7,D7       all fine
+```
+
+**Not a transport fault.** Gen5 read A1 on this same plate the same evening
+(0.0906 at 450 nm), the plate geometry checks out (12x8, A1 at y=70.99, 9 mm
+pitch), and the command is index-based rather than coordinate-based — so the
+suspicion is PyLabRobot's partial-region command format at `min_col = 1`.
+Whether it reproduces on the libusb transport is **untested**; that needs a
+driver swap back, which is exactly what this shim exists to avoid.
+
+Practical consequence today: full-plate work through PyLabRobot will fail until
+this is understood. Gen5 is unaffected.
 
 The 22 unit tests verify the *mapping* against a fake handle. They cannot
 verify it against a reader, because **D2XX cannot see the chip while it is
