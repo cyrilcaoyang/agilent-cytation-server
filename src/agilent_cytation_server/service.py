@@ -189,6 +189,22 @@ class CytationService:
                     if probe is not None:
                         self.equipment_version = probe() or self.equipment_version
             except Exception as exc:
+                # A failed setup() has usually already opened the USB
+                # handle. Leaving the half-open reader on self._reader keeps
+                # that handle for the life of the process: the device then
+                # enumerates with a blank serial/description and *every*
+                # later startup fails identically, so one transient
+                # non-response becomes permanently unrecoverable without a
+                # service restart (2026-08-25). Drop it so a retry re-opens
+                # cleanly.
+                try:
+                    await self._reader.stop()
+                except Exception:
+                    logger.debug(
+                        "Discarding reader after failed setup", exc_info=True
+                    )
+                finally:
+                    self._reader = None
                 self._record_error(exc, "startup")
                 raise
 

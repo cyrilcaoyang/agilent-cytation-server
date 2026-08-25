@@ -89,3 +89,53 @@ def test_status_is_always_http200_shape(dry_run: bool) -> None:
     status = _run(svc.get_status())
     assert status.equipment_id == "cytation_5"
     assert status.equipment_kind == "plate_reader"
+
+
+class _FailingSetupReader(StubCytationReader):
+    """A reader whose ``setup()`` opens the link and then fails.
+
+    Models the real failure: ``BioTekPlateReaderBackend.setup`` opens the
+    USB handle *before* the first command times out, so a raising ``setup()``
+    still leaves the device claimed.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stopped = False
+
+    async def setup(self) -> None:  # type: ignore[override]
+        self.opened = True
+        raise TimeoutError("Timeout while waiting for response")
+
+    async def stop(self) -> None:  # type: ignore[override]
+        self.stopped = True
+
+
+def test_failed_startup_releases_the_reader() -> None:
+    """A failed ``setup()`` must not strand the USB handle.
+
+    Regression for 2026-08-25: ``startup()`` recorded the error and re-raised
+    without closing the half-open reader, so the handle stayed open for the
+    life of the process. The device then enumerated with a blank identity and
+    every later ``POST /control/startup`` failed the same way — recoverable
+    only by restarting the service, which needs an administrator.
+    """
+    made: list[_FailingSetupReader] = []
+
+    def factory() -> _FailingSetupReader:
+        made.append(_FailingSetupReader())
+        return made[-1]
+
+    svc = CytationService(dry_run=False, reader_factory=factory)
+
+    with pytest.raises(TimeoutError):
+        _run(svc.startup())
+
+    assert made[0].stopped, "failed setup() left the link open"
+    assert svc._reader is None, "half-open reader was kept on the service"
+
+    # The whole point: the next attempt gets a clean open rather than
+    # inheriting the previous failure.
+    with pytest.raises(TimeoutError):
+        _run(svc.startup())
+    assert len(made) == 2, "retry reused the dead reader instead of remaking it"
