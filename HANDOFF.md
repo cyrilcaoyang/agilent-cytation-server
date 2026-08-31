@@ -61,6 +61,88 @@ temperature across its entire six-hour heated phase. Getting a series during
 a shaken incubation means **pausing the shaker around each read**, which is
 actuation and belongs in workflow code, never in a side-effect-free poll.
 
+## Bench session 2026-08-31 — what is now verified on hardware
+
+Ran the shipped-but-unproven set against the instrument. Four things passed,
+two new bugs fell out, and one design decision was proved wrong on its first
+day. Detail in `docs/BENCH_2026-08-31.md`.
+
+| Item | Result |
+|---|---|
+| Shake abort leaves the link usable | **PASS** — link answered after the abort; `activity: running` observed mid-shake |
+| Drawer interlock | **PASS** — all six checks: 412 `drawer_open`, correct body shape, actions withheld, `last_error` untouched, read succeeds once closed |
+| `last_error` auto-clear (§6.4) | **PASS** — a stale `read.luminescence` cleared on the next successful read |
+| Fluorescence reads | **PASS**, first time ever on hardware — 7 command shapes, several wells and wavelength pairs |
+| Luminescence reads | **PASS except any region whose maximum corner is H12** — see below |
+| Imaging autofocus + auto-exposure | **PASS**, first time on a real subject — converged to peak pixel ~200/255 as designed |
+| Objective selection | **FAILS for 40X** — see below |
+
+### New bug: luminescence rejects any region ending at H12
+
+Reproducible. `H12` alone, `H12+H11`, `G11..H12`, and the **whole plate
+`A1..H12`** all fail; `H11`, `G12`, `A1..H11`, `A1..G12`, `A1`, `D3`, `B7`
+and `A1-A4` all succeed. Absorbance and fluorescence read H12 fine, so it is
+luminescence-only.
+
+**It is not the checksum band**, which was the first guess. Computing PLR's
+luminescence checksum (`(sum(cmd) + 8) % 100`) predicts the opposite of what
+happens: `H11` → 99 and `B7` → 97 are both inside the rejected 94-99 band and
+both succeed, while `H12` → 01 and `H12+H11` → 00 sit outside it and both
+fail. So `_pad_for_checksum` is the wrong tool here and extending it to
+luminescence would not help.
+
+Consequence worth weighing: a **full-plate luminescence read is impossible
+today**, which is the common case for a luminescence assay, not an edge case.
+Single-well failures come back in 0.1 s (rejected at the start command) while
+whole-plate fails after ~12 s (runs, then the response assertion fails) — two
+different failure points, so there may be two causes.
+
+### New bug: the 40X objective returns the 20X image
+
+`imaging.capture` reports `objective: "O_40X_PL_FL_Phase"` while delivering
+the 20X view. Three independent lines of evidence on the same well:
+
+* image statistics — 20X vs 40X mean absolute difference 2.11 with identical
+  std (16.40 both) and 65 % of pixels within 2 grey levels, i.e. the same
+  frame plus sensor noise; 4X vs 20X differs by 36.32 with only 12 % within 2;
+* timing — the 4X→20X capture took 11.8 s (turret moving), 20X→40X took
+  5.0 s, the same as a capture with no turret change;
+* autofocus returned the identical focal height (8.082841185525986) for 4X
+  and 20X, so it is quantized to a fixed search grid rather than searching
+  per objective.
+
+### Open question: the 4X field of view is far wider than 4X
+
+A 4X capture spans roughly three wells (~20 mm). On a 2448×2048 sensor with
+3.45 µm pixels, 4X should give ~2.1 mm — a patch *inside* one well. Measured
+well pitch in the image works out at ~8.15 µm/px, an effective ~0.42X. Either
+the reported objective does not match the light path at 4X, or the assumed
+sensor geometry is wrong. **Settle it with a calibration target, not a
+crystallization plate** — a plate with known feature spacing, or the vendor
+objective setup plate (PN 1222531). Anyone sizing crystals from these images
+today could be out by ~10x. Note git history already carries "correct stale
+1.25x-objective claim in capture docstrings", so this area has misled before.
+
+### The option-A assertion was wrong on day one
+
+`_restore_persisted_plate` asserted last Friday's solubility plate at
+startup. The plate physically on the carrier was a *different* one — the
+crystallization plate from Friday — and the service had no way to know. This
+is exactly the failure mode argued in the option-A discussion, observed
+within a day of shipping. Nothing broke, because `plate.load` metadata is
+bookkeeping and reads address wells positionally, but it means
+`details.plate_restored_at_startup` is doing real work and a reader should
+treat a restored plate as a claim. It also cost a real sample disturbance:
+the shake test in item 1 ran on a crystallization plate believed to be blank.
+
+### Smaller gap found in the §6.4 work
+
+`plate.load` / `plate.unload` / `well.update` do not clear `last_error` —
+they are not bracketed by `_operation`. `plate.load` does drive the
+instrument (it sends `set_plate`), so by §6.4's table it should clear. A
+stale `last_error` was observed sitting on a `ready` device after a
+successful `plate.load`.
+
 ## Two things that will bite you
 
 **The live service runs from the working tree.** The venv holds an editable
