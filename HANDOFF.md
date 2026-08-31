@@ -102,21 +102,29 @@ instead of a 500.
    touches `biotek_backend.py`; a `CytationMicroscopyBackend` on a side branch
    suggests reader and imager split apart. Unreleased; we pin 0.2.1.
 5. **A campaign lock (`workflow.start` / `workflow.end`)** — see below.
-6. **A drawer interlock** — `_drawer` is tracked and read by nothing, so a
-   read with the carrier out reaches the driver and fails as a bare
-   `AssertionError` that `_operation` records as an operational fault. §6.3
-   says a healthy device declining an inapplicable request is not a failure;
-   this should be a `DrawerNotClosed(PreconditionNotMet)` → 412, mirrored in
-   `allowed_actions` through one helper (plateloc's §6.2 pattern). It is also
-   the cheapest defence against the front-panel eject button, which no
-   software can disable — see below. Note there is **no drawer-position query**
-   in the driver's command set, so `_drawer` is dead reckoning: it is assumed
-   `in` at connect and only moves when we move it.
+6. ~~**A drawer interlock**~~ — shipped 2026-08-30. The three reads and
+   `imaging.capture` now raise `DrawerOpen` → 412 `drawer_open` while the
+   carrier is out, mirrored in `allowed_actions` through one helper per §6.2.
+   It blocks only on a **known-open** drawer: there is no position query in
+   the driver's command set, so `_drawer` is dead reckoning (seeded `in` at
+   connect, moved only when we move it), and a stale `out` would refuse every
+   read on a correctly loaded instrument with no operator override. It
+   therefore does **not** catch the front-panel eject button — nothing can,
+   see below.
+7. ~~**`last_error` never auto-cleared**~~ — shipped 2026-08-30 (§6.4). Only
+   `startup` used to clear it, so one transient fault sat on the tile through
+   every later successful read until a restart. Now cleared on the first 2xx
+   from any operational action; refusals, `/status`, and the claim verbs do
+   not clear it. This was the last unticked §6 item on the v1.1 checklist.
+8. ~~**No published `last_error.code` taxonomy**~~ — shipped 2026-08-30
+   (best practice #6): `LAST_ERROR_CODES` in `service.py`, table in the
+   README, and a test deriving the codes from the call sites so a new action
+   cannot quietly introduce an undocumented one.
 
 ### Deferred: a campaign lock for long workflows
 
 **Decided 2026-08-30, not started.** A workflow that holds the reader for
-hours is invisible on the dashboard today. The immediate half shipped in
+hours was invisible on the dashboard. The immediate half shipped in
 `ac-organic-lab` (`PlateReaderTile` now renders `details.claimed_by` as an
 "In use by …" banner and disables its controls), which is enough to *see* the
 lock but inherits the claim's lifetime: a claim dies when its heartbeat stops,
