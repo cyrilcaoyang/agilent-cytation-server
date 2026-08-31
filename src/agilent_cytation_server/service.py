@@ -36,7 +36,7 @@ from typing import Any, Callable
 
 from . import config as _config
 from .claims import ClaimManager
-from .errors import PreconditionNotMet, describe
+from .errors import DrawerOpen, PreconditionNotMet, describe
 from .models import (
     PROTOCOL_VERSION,
     ComponentStatus,
@@ -493,6 +493,7 @@ class CytationService:
     ) -> dict[str, float]:
         async with self._lock:
             self._require_connected()
+            self._require_drawer_closed()
             async with self._operation("read.absorbance", counts_as_cycle=True):
                 result = await self._reader.read_absorbance(
                     wells=wells, wavelength_nm=wavelength_nm
@@ -511,6 +512,7 @@ class CytationService:
     ) -> dict[str, float]:
         async with self._lock:
             self._require_connected()
+            self._require_drawer_closed()
             async with self._operation("read.fluorescence", counts_as_cycle=True):
                 result = await self._reader.read_fluorescence(
                     wells=wells,
@@ -531,6 +533,7 @@ class CytationService:
     ) -> dict[str, float]:
         async with self._lock:
             self._require_connected()
+            self._require_drawer_closed()
             async with self._operation("read.luminescence", counts_as_cycle=True):
                 result = await self._reader.read_luminescence(
                     wells=wells,
@@ -639,6 +642,7 @@ class CytationService:
     ) -> dict[str, Any]:
         async with self._lock:
             self._require_connected()
+            self._require_drawer_closed()
             if not self.imaging_enabled:
                 raise RuntimeError(
                     "Imaging is disabled in config.toml ([imaging].enabled=false)"
@@ -853,6 +857,44 @@ class CytationService:
             )
         return comps
 
+    def _drawer_is_open(self) -> bool:
+        """Would an optical action be refused for the carrier being out?
+
+        The single source of truth for the drawer interlock: `/control/*`
+        raises :class:`DrawerOpen` from it and `_allowed_actions` withholds
+        from it, so the two surfaces cannot drift (§6.2 — an action listed in
+        `allowed_actions` must not 412 if invoked immediately).
+
+        **Blocks only on a known-open drawer**, never on `"unknown"`. There
+        is no position query in the driver's command set (`J` opens, `A`
+        closes, and nothing reports where the carrier is), so `_drawer` is
+        dead reckoning: seeded `"in"` at connect and moved only when we move
+        it. Failing open on uncertainty is the deliberate choice — a stale
+        `"in"` costs the same driver assertion we get today, while a stale
+        `"out"` would refuse every read on a perfectly loaded instrument,
+        with no way for the operator to correct it short of a drawer cycle.
+        An interlock that guesses wrong in the blocking direction is worse
+        than no interlock, because it cannot be argued with.
+
+        The consequence worth stating plainly: this does **not** detect
+        someone pressing the front-panel eject button (see HANDOFF). It
+        catches the case the software actually knows about — a `drawer.open`
+        that was never followed by a `drawer.close`.
+        """
+
+        return self._drawer == "out"
+
+    def _require_drawer_closed(self) -> None:
+        """Raise before the operation opens an activity span.
+
+        Deliberately outside ``_operation``: a refusal is not an operation,
+        so it should not stamp `activity_since` or blip `running` on a poll
+        that lands between the two.
+        """
+
+        if self._drawer_is_open():
+            raise DrawerOpen(drawer_state=self._drawer)
+
     def _link_healthy(self) -> bool:
         """Is the serial link still answering the question it was asked?
 
@@ -1007,9 +1049,12 @@ class CytationService:
             #
             #  - reads and captures need a plate assigned in the reader
             #    (PyLabRobot raises NoPlateError otherwise);
+            #  - reads and captures need the carrier IN — the optics cannot
+            #    address a well that is sitting outside the instrument;
             #  - captures additionally need the camera initialised.
             plate_loaded = self._plate_loaded()
-            can_image = self.imaging_enabled and self._camera_ready() and plate_loaded
+            optics_ready = plate_loaded and not self._drawer_is_open()
+            can_image = self.imaging_enabled and self._camera_ready() and optics_ready
             return [
                 *always,
                 "shutdown",
@@ -1027,7 +1072,7 @@ class CytationService:
                         "read.fluorescence",
                         "read.luminescence",
                     ]
-                    if plate_loaded
+                    if optics_ready
                     else []
                 ),
                 *(["imaging.capture"] if can_image else []),

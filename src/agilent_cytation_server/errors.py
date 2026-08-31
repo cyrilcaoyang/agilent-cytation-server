@@ -56,6 +56,47 @@ class PlateNotLoaded(PreconditionNotMet):
         super().__init__(message, required_action="plate.load", **extra)
 
 
+class DrawerOpen(PreconditionNotMet):
+    """The carrier is out, so nothing optical can address a well.
+
+    Body shape mirrors STATUS_SPEC §6.1's stage-interlock example
+    (``stage_state`` / ``required``) because it is the same interlock on a
+    different device — a client that already branches on plateloc's shape
+    reads this one for free.
+
+    No ``retry_after_s``: closing the drawer is an action, not a wait, so
+    §6.1 wants the field omitted rather than guessed. ``required_action``
+    names the verb that clears it.
+
+    Why this exists at all. Without it the read reaches the driver, whose
+    acknowledgement assertion fails with an empty ``AssertionError`` — which
+    ``_operation`` records as an operational failure, driving the device to
+    `error` and lighting the tile for a reader that never broke. §6.3 is
+    explicit that a healthy device declining an inapplicable request is not
+    a failure. It is also, in practice, unreadable: chasing that assertion
+    is what cost the 2026-08-23 bench session an hour.
+    """
+
+    code = "drawer_open"
+
+    def __init__(
+        self,
+        message: str = (
+            "The plate carrier is out. POST /control/drawer/close before reading."
+        ),
+        *,
+        drawer_state: str = "out",
+        **extra: Any,
+    ) -> None:
+        super().__init__(
+            message,
+            drawer_state=drawer_state,
+            required="in",
+            required_action="drawer.close",
+            **extra,
+        )
+
+
 class CameraNotReady(PreconditionNotMet):
     """The imaging camera was not initialised, so no capture can run."""
 
@@ -90,4 +131,10 @@ def describe(exc: BaseException) -> str:
     return f"{type(exc).__name__} (no message)"
 
 
-__all__ = ["CameraNotReady", "PlateNotLoaded", "PreconditionNotMet", "describe"]
+__all__ = [
+    "CameraNotReady",
+    "DrawerOpen",
+    "PlateNotLoaded",
+    "PreconditionNotMet",
+    "describe",
+]
