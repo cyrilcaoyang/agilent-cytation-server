@@ -1,6 +1,6 @@
 # Handoff — current state
 
-**Last updated 2026-08-19.** If you are picking this repo up cold, read this
+**Last updated 2026-08-30.** If you are picking this repo up cold, read this
 first, then [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) for what still
 needs bench time and [`RUNBOOK.md`](RUNBOOK.md) for day-to-day operations.
 
@@ -13,8 +13,17 @@ worse than no handoff at all.
 
 The service is deployed on `sdl2-pc-03-cytation` as the NSSM service
 `cytation`, port 8040, reporting STATUS_SPEC **v1.2** against real hardware.
-106 tests pass. The Cytation's FTDI chip is bound to **libusbK**, so Gen5 and
-`biotek_driver` cannot reach the reader until you swap back (RUNBOOK §5).
+158 tests pass.
+
+**The Zadig driver swap is retired.** The reader stays on FTDI's vendor
+driver and a D2XX transport shim talks through it (`config.toml` has
+`ftdi_transport = "d2xx"`), so this PC no longer binds the chip to libusbK
+and RUNBOOK §4/§5 are history. D2XX still opens the device exclusively, so
+Gen5 and the service cannot both hold it — but trading is now
+`nssm stop cytation` / `nssm start cytation`, not a 20-minute GUI procedure.
+Watch out for Gen5's status line: it keeps showing "Status: Ready" from
+stored config while the service holds the device; "Temperature: ???" is what
+actually tells you it is not communicating.
 
 | Subsystem | State |
 |---|---|
@@ -25,12 +34,32 @@ The service is deployed on `sdl2-pc-03-cytation` as the NSSM service
 | Imaging — fluorescence | **blocked**: 4 filter-cube slots, all empty |
 | Incubator | verified to ramp; never confirmed to reach setpoint |
 | Shaker | verified empty; never with liquid |
-| Reads (absorbance / fluorescence / luminescence) | **never completed on hardware** |
+| Reads — absorbance | **verified on hardware**, matches a Gen5 sweep |
+| Reads — fluorescence / luminescence | never completed on hardware |
+| Incubator — sub-ambient setpoint | never commanded; 18 °C is only the *declared* floor |
 
-The read path is the one significant gap. The call now reaches the instrument
-with correct arguments, but on an empty carrier the driver's acknowledgement
-assertion fails, so it needs a plate and a person. That is what
-`docs/IMPLEMENTATION.md` exists for.
+Absorbance landed 2026-08-23/24 (A1 0.0841 vs Gen5's 0.084, C5 2.5394 vs
+2.525). It had been failing for a non-obvious reason worth knowing before you
+debug a read: PyLabRobot's command checksum (`sum(cmd) % 100`) is **rejected
+by the instrument whenever it lands in 94-99**, which surfaces as the reader
+"not being in a state to run it" and sends you chasing plate state instead.
+`_pad_for_checksum` grows the read rectangle until the checksum clears and
+discards the extra wells. 41-93 are unreachable with a single-well region and
+remain untested, so the guard is conservative. The earlier "column 1 is
+unreadable" finding was wrong and is retracted.
+
+Fluorescence and luminescence are now the read-path gap — see
+[`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
+
+**Incubator temperature is unreadable while the shaker runs** (measured
+2026-08-24) — a hardware limit, not a locking bug: the `"h"` query gets no
+reply at all, and the late reply is then consumed as the *next* command's
+response (a 0.0 °C reading observed where the truth was 23.6). `/status`
+skips the query while shaking and says so in `components.incubator.message`.
+This already cost a campaign: the 2026-08-21 30 h solubility run recorded no
+temperature across its entire six-hour heated phase. Getting a series during
+a shaken incubation means **pausing the shaker around each read**, which is
+actuation and belongs in workflow code, never in a side-effect-free poll.
 
 ## Two things that will bite you
 
@@ -72,6 +101,64 @@ instead of a 500.
 4. **Watch pylabrobot v1** — PR #1000 restructures the machine interfaces and
    touches `biotek_backend.py`; a `CytationMicroscopyBackend` on a side branch
    suggests reader and imager split apart. Unreleased; we pin 0.2.1.
+5. **A campaign lock (`workflow.start` / `workflow.end`)** — see below.
+6. **A drawer interlock** — `_drawer` is tracked and read by nothing, so a
+   read with the carrier out reaches the driver and fails as a bare
+   `AssertionError` that `_operation` records as an operational fault. §6.3
+   says a healthy device declining an inapplicable request is not a failure;
+   this should be a `DrawerNotClosed(PreconditionNotMet)` → 412, mirrored in
+   `allowed_actions` through one helper (plateloc's §6.2 pattern). It is also
+   the cheapest defence against the front-panel eject button, which no
+   software can disable — see below. Note there is **no drawer-position query**
+   in the driver's command set, so `_drawer` is dead reckoning: it is assumed
+   `in` at connect and only moves when we move it.
+
+### Deferred: a campaign lock for long workflows
+
+**Decided 2026-08-30, not started.** A workflow that holds the reader for
+hours is invisible on the dashboard today. The immediate half shipped in
+`ac-organic-lab` (`PlateReaderTile` now renders `details.claimed_by` as an
+"In use by …" banner and disables its controls), which is enough to *see* the
+lock but inherits the claim's lifetime: a claim dies when its heartbeat stops,
+so a crashed orchestrator silently releases a reader with a plate still
+incubating in it.
+
+The deferred half is a device-side lock that outlives individual claims,
+copying `agilent-hplcms-server`'s proven shape rather than inventing one:
+
+- `POST /control/workflow/start {owner, run_id}` / `POST /control/workflow/end`
+  (idempotent), with `details.workflow = {active, owner, run_id, started_at}`
+  on `/status`.
+- Non-holder `/control/*` → **423** with `{"error": "workflow_active", ...}`;
+  `workflow.start` leaves `allowed_actions` while a workflow is active and
+  `workflow.end` joins it, per §6.2.
+- Released only by an explicit `workflow.end` — **not** by a TTL. That is the
+  whole point, and the one thing the claim cannot do.
+
+`equipment_status` stays `ready` and `activity` stays `idle` between steps.
+Reporting `busy` for the lock's duration was considered and rejected: §2.3
+requires `activity` to be observed from hardware and pairs `busy` with
+`running`, so it would make `cycles_total` and every utilization series
+meaningless, and would hide real reads inside a multi-hour fake span.
+
+Also needs, outside this repo: a `plate_reader` SkillDef pair in
+`ac-organic-lab`'s catalog, tile copy for the 423 shape, and a decision on
+whether `execute_plan` should hold one claim for a whole run instead of one
+per step (it currently releases between steps).
+
+### Not possible: blocking the front-panel eject button
+
+Asked 2026-08-30, answered no. The Cytation 5's carrier eject button is an
+unconditional front-panel control ("located above the reader's power switch",
+IFU p22 / p38) and there is **no lockout command** anywhere in PyLabRobot's
+Cytation surface — the whole set is `J` open, `A` close, `i` home, `C`/`e`
+identity, `h`/`g` temperature, `y` set_plate, `t` config, `D`/`O` read, `x`
+abort, `&` slow mode. Whether the firmware itself ignores the button mid-read
+is undocumented and would take a bench test to establish.
+
+So the only software play is detection, not prevention, and the drawer
+interlock above is what makes an ejected plate report as a named precondition
+rather than an unexplained driver assertion.
 
 ## Repo map
 
