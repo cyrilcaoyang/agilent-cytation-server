@@ -142,19 +142,24 @@ touch `plate.load` on a plate that matters.
    `plate.load` with just a `plate_id` — silently destroys every
    `sample_id` / `volume_ul` / `notes` entry recorded for that plate.
 
-As of this writing the deployed reader is in exactly state (1): `state.json`
-holds `unspecified_plate` with 8 wells of real sample metadata (KNO3,
-CuSO4·5H2O, citric acid, urea, loaded 2026-08-28) and the reader has no
-plate assigned. **Re-assign by POSTing `plate.load` with the full `wells`
-array read back from `/status`, never with `plate_id` alone.**
+**Resolved 2026-08-31 by re-assigning the plate at startup** (option A).
+`_restore_persisted_plate` now hands the store's plate back to the reader
+after a successful connect, so a restart no longer produces the
+contradiction or the pressure to re-`plate.load` blind. Footgun (2) still
+exists — `plate.load` without `wells` still blanks them — but you no longer
+have a reason to reach for it after a restart.
 
-Worth fixing properly, but it is a semantics decision rather than a bug fix,
-so it is left open: either re-assign the persisted plate to the reader during
-`startup` (which is what persisting it was for — note `set_plate` does talk
-to the instrument, so it belongs in the explicit startup action and never in
-a poll), or make `plate.load` preserve existing wells when `wells` is omitted
-and the `plate_id` is unchanged. The first restores coherence; the second
-just removes the footgun.
+**What the restore asserts.** Nothing on this instrument reports whether a
+plate is physically present, so this is the service trusting a file about
+the state of the world: lift the plate out while the service is down and the
+reader will claim one is there. That was the argument against option A and
+it is a real cost, accepted deliberately against a destroyed well map. It is
+kept visible rather than silent — `details.plate_restored_at_startup` is
+`true` for a plate asserted from disk and `false` once an operator's own
+`plate.load` supersedes it. **Anything reasoning about a restored plate
+should treat it as a claim, not an observation.** The restore is best-effort:
+a failure logs and leaves the old behaviour (no plate, optical actions
+withheld), never a failed startup.
 
 ### Deferred: a campaign lock for long workflows
 

@@ -135,6 +135,11 @@ class CytationService:
         self._last_error: ErrorInfo | None = None
         self._busy_state: bool = False
         self._drawer: str = "unknown"
+        # True when the plate currently assigned in the reader came from
+        # `state.json` at startup rather than from an operator's plate.load.
+        # Published so a reader can tell an asserted plate from an observed
+        # one — see `_restore_persisted_plate`.
+        self._plate_restored_at_startup: bool = False
         # Commanded incubator setpoint, or None when temperature control is
         # off. Tracked here because the instrument reports only the measured
         # temperature, and "22 C" means something entirely different with a
@@ -220,6 +225,7 @@ class CytationService:
                     probe = getattr(self._reader, "firmware_version", None)
                     if probe is not None:
                         self.equipment_version = probe() or self.equipment_version
+                self._restore_persisted_plate()
             except Exception as exc:
                 # A failed setup() has usually already opened the USB
                 # handle. Leaving the half-open reader on self._reader keeps
@@ -240,6 +246,61 @@ class CytationService:
                 self._record_error(exc, "startup")
                 raise
 
+    def _restore_persisted_plate(self) -> None:
+        """Re-assign the plate `state.json` remembers to the freshly
+        connected reader.
+
+        The store survives a restart; the reader's PyLabRobot ``Plate``
+        resource does not. Without this the envelope contradicts itself —
+        ``details.loaded_plate`` names a plate while ``plate_in_reader`` is
+        false and every optical action is withheld — and the obvious operator
+        fix (re-POST ``plate.load``) replaces the wells with 96 empty ones,
+        destroying the sample metadata. Restoring here removes both.
+
+        **What this asserts, and what it does not.** Nothing on this
+        instrument reports whether a plate is physically present, so this is
+        the service trusting a file about the state of the world. If someone
+        lifted the plate out while the service was down, the reader will now
+        claim one is there. That is a deliberate trade — the alternative cost
+        a destroyed well map — but it must not be *invisible*, so
+        ``details.plate_restored_at_startup`` marks a plate that was asserted
+        from disk rather than loaded by an operator who was standing there.
+        Anything reasoning about a restored plate should treat it as a claim,
+        not an observation.
+
+        Best-effort by construction: a failure here must never turn a healthy
+        connect into a failed startup. The device simply lands in the old
+        behaviour — no plate in the reader, optical actions withheld — which
+        is recoverable with one `plate.load`.
+        """
+
+        self._plate_restored_at_startup = False
+        persisted = self.plate_state.get()
+        if persisted is None or self._reader is None:
+            return
+        try:
+            self._reader.load_plate(
+                plate_id=persisted.plate_id, model=persisted.model
+            )
+        except Exception:
+            logger.warning(
+                "Could not re-assign the persisted plate %r (model %r) to the "
+                "reader; optical actions stay withheld until plate.load is "
+                "called with its wells",
+                persisted.plate_id,
+                persisted.model,
+                exc_info=True,
+            )
+            return
+        self._plate_restored_at_startup = True
+        logger.info(
+            "Re-assigned persisted plate %r (model %r, %d wells) to the reader. "
+            "Physical presence is asserted from state.json, not observed.",
+            persisted.plate_id,
+            persisted.model,
+            len(persisted.wells),
+        )
+
     async def shutdown(self) -> None:
         """Best-effort disconnect. Never raises."""
         async with self._lock:
@@ -253,6 +314,7 @@ class CytationService:
                 self._reader = None
                 self._busy_state = False
                 self._drawer = "unknown"
+                self._plate_restored_at_startup = False
                 # The cached readback describes a reader we no longer hold;
                 # keeping it would let /status report a temperature for a
                 # disconnected instrument.
@@ -462,6 +524,9 @@ class CytationService:
             # `read.absorbance` and friends reachable at all.
             if self._reader is not None and self._reader.is_connected():
                 chosen = self._reader.load_plate(plate_id=plate_id, model=chosen)
+            # Someone was here and said so: this plate is observed, not
+            # asserted from disk, whatever startup had claimed.
+            self._plate_restored_at_startup = False
             return self.plate_state.load_plate(
                 plate_id=plate_id, model=chosen, wells=wells
             )
@@ -1016,6 +1081,10 @@ class CytationService:
             # the persisted store remembers — the two disagree after a
             # restart, and only the former permits a read.
             "plate_in_reader": self._plate_loaded(),
+            # Asserted from state.json at startup, or loaded by an operator?
+            # The instrument cannot report physical presence, so a reader that
+            # cares about the difference needs to be told.
+            "plate_restored_at_startup": self._plate_restored_at_startup,
         }
         if self.imaging_enabled:
             camera_ready = self._camera_ready()
