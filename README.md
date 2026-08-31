@@ -198,6 +198,27 @@ operator to override it. It therefore does **not** catch someone pressing the
 front-panel eject button; nothing in software can, and nothing in software
 can disable that button either (see `HANDOFF.md`).
 
+### Where captures are written
+
+```
+captures/
+  <plate_id>/<YYYYMMDD>/<well>_<channel>_<stamp>_f<focal>_e<exposure>.png
+```
+
+Filed under the plate first — that is the durable identity you search by
+later — then by day, since one plate is often imaged across several sessions.
+The plate id is the one given to `POST /control/plate/load`, sanitised to a
+conservative character set; a capture with no plate id would land under
+`_unfiled/`, though a capture requires a loaded plate so that should be
+unreachable.
+
+**Nothing is ever written directly into `captures/`.** It used to be, which
+left 1142 loose PNGs whose plate could no longer be recovered from anything
+but the timestamp in the filename; those are now parked under
+`_unsorted/<YYYYMMDD>/`. The scripts in `scripts/` write flat
+`<timestamp>_<label>/` folders of their own and are untouched — both
+conventions coexist under the same root.
+
 ### `last_error.code` taxonomy
 
 Best practice #6 asks each repo to publish a stable set of codes so clients

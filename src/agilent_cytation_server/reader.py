@@ -193,6 +193,7 @@ class CytationReader:
         self._backend: Any | None = None
         self._plate: Any | None = None
         self._plate_model: str | None = None
+        self._plate_id: str | None = None
         self._camera_ready = False
         self._camera_error: str | None = None
         self._firmware_version: str | None = None
@@ -508,12 +509,17 @@ class CytationReader:
         self._reader.assign_child_resource(plate)
         self._plate = plate
         self._plate_model = model
+        # Retained so captures can be filed under the plate they belong to
+        # (see `_capture_dir`); the PLR resource name is prefixed, so it is
+        # not a clean source for a directory name.
+        self._plate_id = plate_id
         return model
 
     def unload_plate(self) -> None:
         if self._reader is None or self._plate is None:
             self._plate = None
             self._plate_model = None
+            self._plate_id = None
             return
         try:
             self._reader.unassign_child_resource(self._plate)
@@ -522,6 +528,7 @@ class CytationReader:
         finally:
             self._plate = None
             self._plate_model = None
+            self._plate_id = None
 
     def _require_plate(self) -> Any:
         if self._plate is None:
@@ -1371,6 +1378,51 @@ class CytationReader:
         # an unattended whole-well capture.
         return min((Objective[n] for n in installed), key=lambda o: o.magnification)
 
+    #: Where captures go when the plate id is unknown. A capture requires a
+    #: loaded plate, so this should be unreachable — it exists so that an
+    #: unexpected path still lands in a folder rather than the root.
+    _UNFILED = "_unfiled"
+
+    @staticmethod
+    def _safe_dir_name(raw: str) -> str:
+        """Make an operator-supplied plate id safe as a directory name.
+
+        Plate ids come from `POST /control/plate/load` and are free text, so
+        they can carry separators, drive letters, `..`, or nothing usable at
+        all. Keeping a conservative character set is easier to reason about
+        than escaping, and a collision between two ids differing only in
+        punctuation is harmless — they are the same experiment to anyone
+        looking in the folder.
+        """
+
+        kept = "".join(ch if (ch.isalnum() or ch in "-_.") else "_" for ch in raw)
+        kept = kept.strip("._")
+        return kept[:64] or CytationReader._UNFILED
+
+    def _capture_dir(self, when: datetime) -> Path:
+        """``captures/<plate_id>/<YYYYMMDD>/`` — never the captures root.
+
+        Filed under the plate first because the plate is the durable identity
+        someone searches by later ("show me the crystallization plate"), then
+        by day, since one plate is often imaged across several sessions.
+        Writing into the root — which is what this used to do — left 1142
+        loose files whose plate could no longer be recovered from anything
+        but their timestamps.
+
+        Sibling folders written by the scripts in `scripts/` use a flat
+        `<timestamp>_<label>` name and are left alone; both conventions
+        coexist under the same root.
+        """
+
+        # Only a real id goes through the sanitiser. Passing the sentinel
+        # through it strips its own leading underscore ("_unfiled" ->
+        # "unfiled"), which would quietly split the unfiled captures across
+        # two folders depending on which path produced them.
+        plate = (
+            self._safe_dir_name(self._plate_id) if self._plate_id else self._UNFILED
+        )
+        return self._captures_dir / plate / when.strftime("%Y%m%d")
+
     def _save_capture(
         self,
         image: Any,
@@ -1390,13 +1442,15 @@ class CytationReader:
                 "Install with `uv sync --extra imaging`."
             ) from exc
 
-        self._captures_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        now = datetime.now()
+        out_dir = self._capture_dir(now)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = now.strftime("%Y%m%dT%H%M%S")
         filename = (
             f"{well}_{channel.lower()}_{stamp}"
             f"_f{focal_height_mm:.2f}_e{exposure_ms:.1f}.png"
         )
-        path = self._captures_dir / filename
+        path = out_dir / filename
         PILImage.fromarray(image).save(path)
 
         # Pixel stats travel with the result because focus and exposure are
