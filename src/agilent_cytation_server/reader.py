@@ -44,6 +44,7 @@ found by reading its source rather than its docs:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +55,10 @@ from .errors import CameraNotReady, PlateNotLoaded
 from .models import TEMPERATURE_MAX_C, TEMPERATURE_MIN_C
 
 logger = logging.getLogger(__name__)
+
+#: How long a post-shake link probe waits. Short on purpose: it is a liveness
+#: check, not a measurement, and a desynced link never answers at all.
+_RESYNC_PROBE_TIMEOUT_S = 5.0
 
 
 # Channel id (as accepted by POST /control/imaging/capture) -> the name of
@@ -193,6 +198,11 @@ class CytationReader:
         self._firmware_version: str | None = None
         self._serial_number: str | None = None
         self._connected = False
+        # True once a resync probe has failed: the link is answering the
+        # wrong questions, so every later command will time out. Cleared by
+        # any coherent reply (see `_read_temperature`), which makes it
+        # self-healing if the instrument does catch up on its own.
+        self._link_desynced = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -294,6 +304,8 @@ class CytationReader:
             await self._reader.setup()
 
         self._connected = True
+        # A fresh handle cannot inherit the previous link's desync.
+        self._link_desynced = False
 
         # Installed objectives / filter cubes are read from the instrument's
         # own configuration (whatever was registered in Gen5's Instrument
@@ -657,7 +669,13 @@ class CytationReader:
                     "Temperature still out of range after re-read (%.1f C)", value
                 )
                 return None
+        # A reply that framed and parsed inside the declared range is proof
+        # the link is answering our question and not the previous one, so it
+        # clears a desync as well as a read error. This is the only clear
+        # path: it makes recovery observable from the ordinary status poll
+        # instead of requiring another shake abort to notice.
         self._last_temp_error = None
+        self._link_desynced = False
         return float(value)
 
     # ------------------------------------------------------------------
@@ -743,9 +761,93 @@ class CytationReader:
         await self._backend.shake(shake_type, displacement_mm)
 
     async def stop_shaking(self) -> None:
+        """Stop the shaker and leave the serial link usable.
+
+        PyLabRobot aborts a shake with ``send_command("x",
+        wait_for_response=False)``. The instrument answers anyway, so that
+        reply is left sitting in the FTDI receive buffer; the next command
+        then reads *it* instead of its own, and every request/response pair
+        after that is off by one. The symptom is "Timeout while waiting for
+        response" on every subsequent command, forever, on a link that is
+        otherwise alive — observed twice on 2026-08-25, once costing a run
+        and a PnP re-enumeration to clear.
+
+        So: drain the buffer after aborting, then prove the link answers
+        before handing it back. Purging is cheap and idempotent; a desynced
+        link is neither.
+        """
         if self._backend is None:
             raise RuntimeError("Cytation reader is not connected")
         await self._backend.stop_shaking()
+        await self._resync_link()
+
+    async def _resync_link(self, attempts: int = 3) -> bool:
+        """Drain stale bytes and confirm the instrument answers again.
+
+        Sets :attr:`_link_desynced` and returns False if it never does,
+        rather than raising: the shaker did stop, and turning a successful
+        abort into an exception would lose that. The caller decides what a
+        dead link means — the service turns it into a `/status` fault, which
+        is the only place a *persistent* condition can honestly live.
+
+        The probe is a temperature query because it is the one command that
+        is both side-effect-free and carries a self-validating reply: the
+        value has to frame correctly *and* land inside the instrument's
+        declared range. That second half is what makes it a desync test at
+        all. A desynced link is not silent — it answers, with the previous
+        command's reply — so a probe that only checked "did something come
+        back" would pass on exactly the fault being probed for.
+        """
+        backend = self._backend
+        if backend is None:
+            return False
+        io = getattr(backend, "io", None)
+        for attempt in range(1, attempts + 1):
+            try:
+                if io is not None and hasattr(io, "usb_purge_rx_buffer"):
+                    await io.usb_purge_rx_buffer()
+            except Exception:
+                logger.debug("purge failed on attempt %d", attempt, exc_info=True)
+            reason: str | None = None
+            try:
+                # `_read_temperature` returns None for a reply it could not
+                # parse or that fell outside the declared range — which is
+                # what a stale reply looks like — so None is a failed probe,
+                # not a successful one. Only an exception being treated as
+                # failure would have let the fault through.
+                if await self._read_temperature(timeout=_RESYNC_PROBE_TIMEOUT_S) is None:
+                    reason = "incoherent reply"
+            except Exception as exc:
+                reason = f"{type(exc).__name__}: {exc}"
+            if reason is None:
+                if attempt > 1:
+                    logger.info("Link resynced after %d attempts", attempt)
+                self._link_desynced = False
+                return True
+            logger.warning(
+                "Link still unresponsive after shake abort (attempt %d/%d): %s",
+                attempt,
+                attempts,
+                reason,
+            )
+            if attempt < attempts:
+                await asyncio.sleep(1.0)
+        logger.error(
+            "Link did not resync after stopping the shaker; commands will "
+            "time out until it recovers or the reader is reconnected"
+        )
+        self._link_desynced = True
+        return False
+
+    def link_healthy(self) -> bool:
+        """Cheap and side-effect-free, so the status path can call it.
+
+        Same shape as :meth:`is_shaking` / :meth:`camera_ready`: report a
+        flag the operational path already maintains rather than probing the
+        instrument from a poll (STATUS_SPEC §4 best practice #1).
+        """
+
+        return not self._link_desynced
 
     # ------------------------------------------------------------------
     # Identity
@@ -1434,6 +1536,12 @@ class StubCytationReader:
     async def stop_shaking(self) -> None:
         self._require_connected()
         self._shaking = False
+
+    def link_healthy(self) -> bool:
+        # The stub has no serial link to desynchronise, so it is always
+        # healthy. Present so dry-run exercises the same status path as
+        # production rather than falling through the service's getattr.
+        return True
 
     def has_plate(self) -> bool:
         return self._plate is not None

@@ -348,6 +348,7 @@ class CytationService:
         metrics["cycles_total"] = MetricValue(value=int(self._cycles_total), unit="count")
 
         # ---- top-level equipment_status --------------------------------
+        required_actions: list[str] = []
         if self.dry_run:
             state: str = "dry_run"
             message: str | None = "Dry-run mode - no hardware connected"
@@ -355,6 +356,17 @@ class CytationService:
         elif self._busy_state:
             state = "busy"
             message = "Plate reader operation in progress"
+        elif not self._link_healthy():
+            # §2.2: never `ready` with a known run-blocking fault. This one
+            # blocks *everything* — reads, captures, temperature — so it is
+            # `error`, not `degraded`; there is no useful subset left.
+            state = "error"
+            message = (
+                "Serial link desynchronised after a shake abort; commands "
+                "will time out. POST /control/shutdown then /control/startup "
+                "to re-open the link."
+            )
+            required_actions = ["shutdown", "startup"]
         elif self._last_error is not None and (
             (now - self._last_error.timestamp).total_seconds()
             < _RECENT_ERROR_WINDOW_S
@@ -381,6 +393,7 @@ class CytationService:
             activity=activity,  # type: ignore[arg-type]
             activity_since=self._activity_since,
             message=message,
+            required_actions=required_actions,
             allowed_actions=self._allowed_actions(state, activity),
             device_time=now,
             uptime_seconds=uptime,
@@ -576,6 +589,16 @@ class CytationService:
             self._note_activity(self._observed_activity())
 
     async def stop_shaking(self) -> None:
+        """Stop the shaker, and notice if the abort took the link with it.
+
+        The reader drains and re-probes the link on the way out (see
+        ``CytationReader.stop_shaking``); it does not raise when that fails,
+        because the shaker genuinely did stop and losing that would be
+        worse. So the failure is picked up here instead, from the same flag
+        ``/status`` reads — one source of truth for a condition that has to
+        appear on two surfaces.
+        """
+
         async with self._lock:
             self._require_connected()
             try:
@@ -583,6 +606,22 @@ class CytationService:
             except Exception as exc:
                 self._record_error(exc, "shake.stop")
                 raise
+            if not self._link_healthy():
+                # A real execution failure, not a §6.3 precondition refusal:
+                # something broke while carrying out the command. The stable
+                # `code` is what lets a client offer the reconnect hint
+                # without string-matching the message.
+                self._last_error = ErrorInfo(
+                    code="link_desync",
+                    message=(
+                        "Shake abort left the serial link out of sync; the "
+                        "instrument did not answer a probe. Reconnect the "
+                        "reader (shutdown then startup) before reading."
+                    ),
+                    severity="error",
+                    timestamp=datetime.now(timezone.utc),
+                )
+                logger.error("shake.stop left the link desynchronised")
             self._note_activity(self._observed_activity())
 
     async def capture_image(
@@ -813,6 +852,26 @@ class CytationService:
                 message=None if camera_ready else self._camera_error(),
             )
         return comps
+
+    def _link_healthy(self) -> bool:
+        """Is the serial link still answering the question it was asked?
+
+        False after a shake abort left the request/response stream off by
+        one and the resync probes could not recover it. Deliberately a
+        *live* condition rather than a timestamped ``last_error``: a desync
+        does not heal on a timer, so an `error` that ages out of the
+        recent-error window would report `ready` on a link where every
+        command still times out. The reader clears the flag itself on the
+        next coherent reply, so recovery needs no operator action.
+        """
+
+        probe = getattr(self._reader, "link_healthy", None) if self._reader else None
+        if probe is None:
+            return True
+        try:
+            return bool(probe())
+        except Exception:  # pragma: no cover - defensive
+            return True
 
     def _camera_ready(self) -> bool:
         if self._reader is None or not self.imaging_enabled:
