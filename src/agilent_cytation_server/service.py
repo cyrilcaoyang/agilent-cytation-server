@@ -589,6 +589,7 @@ class CytationService:
             except Exception as exc:
                 self._record_error(exc, "shake.start")
                 raise
+            self._last_error = None  # §6.4, as in `_operation`
             self._note_activity(self._observed_activity())
 
     async def stop_shaking(self) -> None:
@@ -609,6 +610,8 @@ class CytationService:
             except Exception as exc:
                 self._record_error(exc, "shake.stop")
                 raise
+            self._last_error = None  # §6.4 — before the desync check below,
+            # which is a fresh failure of *this* action and must survive it.
             if not self._link_healthy():
                 # A real execution failure, not a §6.3 precondition refusal:
                 # something broke while carrying out the command. The stable
@@ -746,6 +749,15 @@ class CytationService:
             yield
             if counts_as_cycle:
                 self._cycles_total += 1
+            # §6.4: `last_error` means "the most recent operational failure
+            # since the last successful action", not "since process start".
+            # Until now only `startup` cleared it, so a transient fault sat
+            # on the tile through every subsequent successful read until the
+            # service was restarted — the operator is left wondering why a
+            # working instrument is still complaining. Cleared here, on the
+            # success path only: a 412 refusal must neither populate it
+            # (§6.3) nor clear it (§6.4's table gives no clear for any 4xx).
+            self._last_error = None
         except (PreconditionNotMet, ValueError) as exc:
             # §6.3: a refusal is NOT an operational failure. The equipment is
             # healthy and simply declined an inapplicable request (no plate
