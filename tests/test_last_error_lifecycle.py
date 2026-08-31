@@ -103,3 +103,38 @@ def test_claim_verbs_do_not_clear_it(client) -> None:
     client.post("/control/heartbeat", headers={"X-Claim-Token": token})
 
     assert client.get("/status").json()["last_error"] is not None
+
+
+def test_every_recorded_code_is_in_the_published_taxonomy() -> None:
+    """Best practice #6: the set is the contract, so it must cover reality.
+
+    Guards the drift that makes `code` useless — a new `/control/*` action
+    whose failure records a label no client has ever heard of. Derived from
+    the `_operation` call sites rather than hand-listed, so adding an action
+    without extending the taxonomy fails here.
+    """
+
+    import re
+    from pathlib import Path
+
+    from agilent_cytation_server.service import LAST_ERROR_CODES
+
+    source = Path(__file__).resolve().parents[1] / "src" / "agilent_cytation_server" / "service.py"
+    text = source.read_text(encoding="utf-8")
+    recorded = set(re.findall(r'_operation\("([^"]+)"', text))
+    recorded |= set(re.findall(r'_record_error\([^,]+, "([^"]+)"\)', text))
+
+    assert recorded, "found no call sites — the regex has rotted"
+    assert recorded <= LAST_ERROR_CODES, (
+        f"codes recorded but not published: {sorted(recorded - LAST_ERROR_CODES)}"
+    )
+
+
+def test_precondition_codes_are_not_in_the_taxonomy() -> None:
+    """§6.3: a refusal is not a failure, so its code must not be able to
+    masquerade as one on `last_error`."""
+
+    from agilent_cytation_server.service import LAST_ERROR_CODES
+
+    for code in ("drawer_open", "plate_not_loaded", "camera_not_ready"):
+        assert code not in LAST_ERROR_CODES

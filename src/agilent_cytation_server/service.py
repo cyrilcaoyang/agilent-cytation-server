@@ -52,6 +52,38 @@ from .reader import StubCytationReader, make_reader
 logger = logging.getLogger(__name__)
 
 
+#: Every value `last_error.code` may take (best practice #6: "Define the
+#: taxonomy as a frozenset[str] or Literal[...] in one place"). Clients branch
+#: on these to offer targeted recovery instead of string-matching `message`,
+#: so they are part of the wire contract and documented in the README.
+#:
+#: All but one are the name of the action that failed, which keeps the set
+#: derivable from the `/control/*` surface rather than separately invented.
+#: `link_desync` is the exception: it names a *condition* the shake abort
+#: leaves behind rather than the action that hit it, because the action
+#: (shake.stop) succeeded.
+#:
+#: Precondition codes (`drawer_open`, `plate_not_loaded`, `camera_not_ready`)
+#: are deliberately NOT here. They ride the 412 body's `precondition` field
+#: and must never reach `last_error` at all — §6.3.
+LAST_ERROR_CODES: frozenset[str] = frozenset(
+    {
+        "startup",
+        "drawer.open",
+        "drawer.close",
+        "read.absorbance",
+        "read.fluorescence",
+        "read.luminescence",
+        "incubator.set_temperature",
+        "incubator.stop",
+        "shake.start",
+        "shake.stop",
+        "imaging.capture",
+        "link_desync",
+    }
+)
+
+
 # Window during which a recent error keeps the device in `error` state.
 # After this, if no further failures land, the device falls back to
 # `ready` / `degraded` per STATUS_SPEC v1.1 state machine.
@@ -1096,6 +1128,22 @@ class CytationService:
         return list(always)
 
     def _record_error(self, exc: Exception, code: str) -> None:
+        """The one place `last_error` is set from a raised exception.
+
+        Validates `code` against :data:`LAST_ERROR_CODES` but **records it
+        either way**. Refusing an unfamiliar code would mean losing an error
+        report because its label was unexpected — throwing away the signal to
+        protect the taxonomy, inside the very path that exists to preserve
+        signal. The warning is enough: a new action that forgets to extend
+        the set shows up in the log, not as a swallowed fault.
+        """
+
+        if code not in LAST_ERROR_CODES:
+            logger.warning(
+                "last_error code %r is not in LAST_ERROR_CODES; recording it "
+                "anyway. Add it to the taxonomy and the README table.",
+                code,
+            )
         self._last_error = ErrorInfo(
             code=code,
             message=describe(exc),

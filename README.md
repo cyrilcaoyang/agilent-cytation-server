@@ -179,6 +179,7 @@ advertised:
 | Precondition | Refusal | Applies to |
 |---|---|---|
 | A plate must be loaded (`POST /control/plate/load`) | 412 `plate_not_loaded` | all reads + capture |
+| The carrier must be in (`POST /control/drawer/close`) | 412 `drawer_open` | all reads + capture |
 | The camera must have initialised | 412 `camera_not_ready` | capture |
 | A fluorescence channel's filter cube must be fitted | 422 naming the fitted cubes | capture |
 
@@ -186,6 +187,47 @@ The plate requirement is not bookkeeping: PyLabRobot addresses wells through
 the `Plate` resource assigned to the `PlateReader`, and raises `NoPlateError`
 without one. Loading a plate assigns that resource as well as recording
 sample metadata.
+
+The drawer gate **blocks only on a carrier this service knows is out** — one
+it opened and did not close. There is no position query anywhere in the
+driver's command set, so the tracked state is dead reckoning and an
+`unknown` drawer is allowed through deliberately: a stale `in` costs the same
+driver assertion as having no interlock at all, while a stale `out` would
+refuse every read on a correctly loaded instrument with no way for the
+operator to override it. It therefore does **not** catch someone pressing the
+front-panel eject button; nothing in software can, and nothing in software
+can disable that button either (see `HANDOFF.md`).
+
+### `last_error.code` taxonomy
+
+Best practice #6 asks each repo to publish a stable set of codes so clients
+branch on `code` rather than string-matching `message`. The set lives in one
+place — `LAST_ERROR_CODES` in `service.py` — and `_record_error` warns when
+something outside it is recorded.
+
+| Code | Means |
+|---|---|
+| `startup` | Connecting to the instrument failed (USB enumeration, D2XX handle held by Gen5, no reply). |
+| `drawer.open` / `drawer.close` | The carrier move failed. |
+| `read.absorbance` / `read.fluorescence` / `read.luminescence` | The measurement failed mid-execution. |
+| `incubator.set_temperature` / `incubator.stop` | The setpoint command failed. |
+| `shake.start` / `shake.stop` | The shake command failed. |
+| `imaging.capture` | The capture failed (camera, focus, or write). |
+| `link_desync` | A shake abort left the serial link answering the *previous* command's reply, and the resync probes could not recover it. Reconnect (`shutdown` then `startup`). The only code naming a condition rather than the action that failed — `shake.stop` itself succeeded. |
+
+Every other code is the name of the action that failed, so the set stays
+derivable from the `/control/*` surface instead of being separately invented.
+
+**Precondition codes are not in this taxonomy.** `drawer_open`,
+`plate_not_loaded` and `camera_not_ready` ride the 412 body's `precondition`
+field and must never reach `last_error` at all: a healthy device declining an
+inapplicable request is not a failure (§6.3).
+
+`last_error` clears on the first 2xx from any operational `/control/*` action
+(§6.4), so it reads "the most recent failure since the last successful
+action", not "since process start". Refusals do not clear it — a 412 is no
+evidence that whatever broke earlier has been fixed — and neither `/status`
+nor the claim verbs do.
 
 ### What this instrument can actually do
 
@@ -265,7 +307,7 @@ curl http://sdl2-pc-03-cytation:8040/status | jq
 ### Spec conformance notes
 
 - `GET /status` is **side-effect-free** — polling it never moves the drawer, never triggers a measurement, never re-initialises the reader. Polling at 2-3 s is the dashboard default.
-- `GET /status` always returns **HTTP 200** when the process is alive. Hardware-not-yet-initialised is reported as `equipment_status: requires_init` with `required_actions: ["startup"]` (the eventual `POST /control/startup` lands in v1.1).
+- `GET /status` always returns **HTTP 200** when the process is alive. Hardware-not-yet-initialised is reported as `equipment_status: requires_init` with `required_actions: ["startup"]`, cleared by `POST /control/startup`.
 - `equipment_id` matches the `id` in the dashboard's `equipment.yaml` (`cytation_5`). Do not change it without coordinating with the dashboard repo.
 - No `equipment_ip` / `equipment_tailscale` self-discovery — the dashboard registry is the single source of truth for "where to reach this device".
 - `models.py` no longer vendors the contract: the wire types are imported from the shared [`sdl-lab-contract`](https://github.com/AccelerationConsortium/sdl-lab-contract) package (pinned to the tag whose major.minor matches the spec revision) and re-exported, so every `from .models import ...` in this repo keeps working.
@@ -274,7 +316,7 @@ Reference snapshots live in `tests/fixtures/status_*.json` covering `requires_in
 
 ## Where to read about the optics / dynamic well selection
 
-This repo currently exposes the **read-only** spec endpoints (`/`, `/health`, `/status`). Imperative control (per-call wells, per-call wavelength, per-call imaging channel) is the Phase 3 work. Design notes for that surface — including how brightfield, UV/DAPI imaging, fluorescence emission, and absorbance reads map onto `POST /control/read.*` and `POST /control/imaging.capture` — live in [`docs/notes/reads_and_imaging.md`](./docs/notes/reads_and_imaging.md). The catalogue of vendor manuals you should download into `docs/vendor/` (gitignored) is in [`docs/INDEX.md`](./docs/INDEX.md).
+The imperative control surface (per-call wells, per-call wavelength, per-call imaging channel) is live — see [REST API](#rest-api) above. Design notes for it — including how brightfield, UV/DAPI imaging, fluorescence emission, and absorbance reads map onto `POST /control/read.*` and `POST /control/imaging.capture` — live in [`docs/notes/reads_and_imaging.md`](./docs/notes/reads_and_imaging.md). The catalogue of vendor manuals you should download into `docs/vendor/` (gitignored) is in [`docs/INDEX.md`](./docs/INDEX.md).
 
 ## Project structure
 
