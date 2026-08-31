@@ -2,8 +2,9 @@
 
 `_save_capture` used to write straight into the captures root, which left
 1142 loose PNGs whose plate could no longer be recovered from anything but a
-timestamp in the filename. Images are now filed under
-`captures/<plate_id>/<YYYYMMDD>/`, and the root is kept clear.
+timestamp in the filename. Images now go to `captures/<YYYYMMDD>_<plate_id>/`
+— timestamp leading so a listing of the root sorts chronologically, matching
+the folders `scripts/` writes — and the root itself is kept clear.
 
 These tests exercise `CytationReader`'s path logic directly rather than
 through a capture, because saving needs pillow, a real frame, and the camera.
@@ -27,9 +28,28 @@ def _reader(tmp_path: Path, plate_id: str | None) -> CytationReader:
     return r
 
 
-def test_captures_are_filed_under_plate_then_date(tmp_path: Path) -> None:
+def test_the_folder_name_leads_with_the_date(tmp_path: Path) -> None:
     d = _reader(tmp_path, "crystallization_20260828")._capture_dir(WHEN)
-    assert d == tmp_path / "crystallization_20260828" / "20260831"
+    assert d == tmp_path / "20260831_crystallization_20260828"
+
+
+def test_folders_sort_chronologically(tmp_path: Path) -> None:
+    """The point of leading with the date: a plain listing is a timeline,
+    even when the plates are unrelated and alphabetically adversarial."""
+
+    names = [
+        _reader(tmp_path, plate)._capture_dir(when).name
+        for when, plate in [
+            (datetime(2026, 9, 2, 9, 0), "aaa_plate"),
+            (datetime(2026, 8, 31, 9, 0), "zzz_plate"),
+            (datetime(2026, 9, 1, 9, 0), "mmm_plate"),
+        ]
+    ]
+    assert sorted(names) == [
+        "20260831_zzz_plate",
+        "20260901_mmm_plate",
+        "20260902_aaa_plate",
+    ]
 
 
 def test_the_captures_root_is_never_the_target(tmp_path: Path) -> None:
@@ -54,9 +74,10 @@ def test_the_captures_root_is_never_the_target(tmp_path: Path) -> None:
     ]:
         d = _reader(tmp_path, plate_id)._capture_dir(WHEN)
         assert d != tmp_path, f"{plate_id!r} landed in the root"
-        assert tmp_path in d.parents, f"{plate_id!r} escaped the root: {d}"
-        # plate + date, no deeper and no shallower
-        assert len(d.relative_to(tmp_path).parts) == 2, f"{plate_id!r} -> {d}"
+        assert d.parent == tmp_path, f"{plate_id!r} escaped the root: {d}"
+        # exactly one folder below the root, and it starts with the date
+        assert len(d.relative_to(tmp_path).parts) == 1, f"{plate_id!r} -> {d}"
+        assert d.name.startswith("20260831_"), f"{plate_id!r} -> {d.name}"
 
 
 @pytest.mark.parametrize(
@@ -89,4 +110,4 @@ def test_unloading_a_plate_forgets_its_id(tmp_path: Path) -> None:
     r = _reader(tmp_path, "plate-1")
     r.unload_plate()  # no reader attached: takes the early-return path
     assert r._plate_id is None
-    assert r._capture_dir(WHEN) == tmp_path / "_unfiled" / "20260831"
+    assert r._capture_dir(WHEN) == tmp_path / "20260831__unfiled"

@@ -1400,18 +1400,17 @@ class CytationReader:
         return kept[:64] or CytationReader._UNFILED
 
     def _capture_dir(self, when: datetime) -> Path:
-        """``captures/<plate_id>/<YYYYMMDD>/`` — never the captures root.
+        """``captures/<YYYYMMDD>_<plate_id>/`` — never the captures root.
 
-        Filed under the plate first because the plate is the durable identity
-        someone searches by later ("show me the crystallization plate"), then
-        by day, since one plate is often imaged across several sessions.
+        One flat folder per plate per day, timestamp leading so a plain
+        listing of `captures/` sorts chronologically. This matches the
+        `<timestamp>_<label>` folders the scripts in `scripts/` have always
+        written, so the whole root reads as one sequence rather than two
+        conventions interleaved.
+
         Writing into the root — which is what this used to do — left 1142
         loose files whose plate could no longer be recovered from anything
         but their timestamps.
-
-        Sibling folders written by the scripts in `scripts/` use a flat
-        `<timestamp>_<label>` name and are left alone; both conventions
-        coexist under the same root.
         """
 
         # Only a real id goes through the sanitiser. Passing the sentinel
@@ -1421,7 +1420,7 @@ class CytationReader:
         plate = (
             self._safe_dir_name(self._plate_id) if self._plate_id else self._UNFILED
         )
-        return self._captures_dir / plate / when.strftime("%Y%m%d")
+        return self._captures_dir / f"{when.strftime('%Y%m%d')}_{plate}"
 
     def _save_capture(
         self,

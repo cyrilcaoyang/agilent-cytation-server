@@ -202,22 +202,30 @@ can disable that button either (see `HANDOFF.md`).
 
 ```
 captures/
-  <plate_id>/<YYYYMMDD>/<well>_<channel>_<stamp>_f<focal>_e<exposure>.png
+  <YYYYMMDD>_<plate_id>/<well>_<channel>_<stamp>_f<focal>_e<exposure>.png
 ```
 
-Filed under the plate first — that is the durable identity you search by
-later — then by day, since one plate is often imaged across several sessions.
-The plate id is the one given to `POST /control/plate/load`, sanitised to a
-conservative character set; a capture with no plate id would land under
-`_unfiled/`, though a capture requires a loaded plate so that should be
+One folder per plate per day, **timestamp leading** so a plain listing of
+`captures/` reads as a timeline. This matches the `<timestamp>_<label>`
+folders the scripts in `scripts/` have always written, so the root is one
+sequence rather than two conventions interleaved.
+
+The plate id comes from `POST /control/plate/load`, sanitised to
+alphanumerics plus `-_.`; a capture with no plate id lands in
+`<date>__unfiled`, though a capture requires a loaded plate so that should be
 unreachable.
 
 **Nothing is ever written directly into `captures/`.** It used to be, which
 left 1142 loose PNGs whose plate could no longer be recovered from anything
-but the timestamp in the filename; those are now parked under
-`_unsorted/<YYYYMMDD>/`. The scripts in `scripts/` write flat
-`<timestamp>_<label>/` folders of their own and are untouched — both
-conventions coexist under the same root.
+but the timestamp in the filename; those are parked under
+`<YYYYMMDD>_unsorted/` by the date in their filename.
+
+One wrinkle worth knowing: nine folders from campaign tooling *outside* this
+repo use the opposite order (`saltscreen_60c_20260824T1824`,
+`campaign_20260825T1600`, …), so they sort after the date-led ones rather
+than among them. Renaming them would orphan the references in
+`scripts/verify_d2xx.py` and `scripts/gen5_spectrum.py`, and would not change
+what that tooling writes next time, so they are left as they are.
 
 ### `last_error.code` taxonomy
 
