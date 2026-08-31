@@ -121,6 +121,41 @@ instead of a 500.
    README, and a test deriving the codes from the call sites so a new action
    cannot quietly introduce an undocumented one.
 
+### Trap: a restart drops the reader's plate, and reloading wipes the samples
+
+Found 2026-08-30 while verifying a restart. Two behaviours compose into a
+data-loss footgun; neither is new, and both are worth knowing before you
+touch `plate.load` on a plate that matters.
+
+1. **`_plate_loaded()` asks the reader, not the store** — deliberately, and
+   its docstring says so: the store survives a restart, the reader's
+   PyLabRobot `Plate` resource does not. So after any service restart
+   `details.plate_in_reader` is `false` while `details.loaded_plate` still
+   names a plate, and **`read.*` / `imaging.capture` drop out of
+   `allowed_actions`** until a plate is assigned again. Both facts are on the
+   envelope, so nothing is hidden — but they read as a contradiction if you
+   only look at `loaded_plate`.
+
+2. **`plate.load` without a `wells` array replaces the wells with 96 empty
+   ones** (`PlateStateStore.load_plate`: `wells if wells is not None else
+   self._empty_wells_96()`). So the obvious fix for (1) — re-POST
+   `plate.load` with just a `plate_id` — silently destroys every
+   `sample_id` / `volume_ul` / `notes` entry recorded for that plate.
+
+As of this writing the deployed reader is in exactly state (1): `state.json`
+holds `unspecified_plate` with 8 wells of real sample metadata (KNO3,
+CuSO4·5H2O, citric acid, urea, loaded 2026-08-28) and the reader has no
+plate assigned. **Re-assign by POSTing `plate.load` with the full `wells`
+array read back from `/status`, never with `plate_id` alone.**
+
+Worth fixing properly, but it is a semantics decision rather than a bug fix,
+so it is left open: either re-assign the persisted plate to the reader during
+`startup` (which is what persisting it was for — note `set_plate` does talk
+to the instrument, so it belongs in the explicit startup action and never in
+a poll), or make `plate.load` preserve existing wells when `wells` is omitted
+and the `plate_id` is unchanged. The first restores coherence; the second
+just removes the footgun.
+
 ### Deferred: a campaign lock for long workflows
 
 **Decided 2026-08-30, not started.** A workflow that holds the reader for
