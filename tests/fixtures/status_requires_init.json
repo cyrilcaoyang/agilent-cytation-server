@@ -50,7 +50,8 @@
     },
     "imaging_enabled": true,
     "loaded_plate": null,
-    "plate_in_reader": false
+    "plate_in_reader": false,
+    "plate_restored_at_startup": false
   },
   "device_time": "2026-04-29T22:50:01Z",
   "equipment_id": "cytation_5",

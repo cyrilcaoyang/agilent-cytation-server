@@ -72,6 +72,7 @@
     "instrument_serial": "STUB0000",
     "loaded_plate": null,
     "plate_in_reader": false,
+    "plate_restored_at_startup": false,
     "readback_age_s": 0.0,
     "temperature_range_c": {
       "max": 65.0,
