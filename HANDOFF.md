@@ -1,6 +1,6 @@
 # Handoff — current state
 
-**Last updated 2026-08-30.** If you are picking this repo up cold, read this
+**Last updated 2026-09-04.** If you are picking this repo up cold, read this
 first, then [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) for what still
 needs bench time and [`RUNBOOK.md`](RUNBOOK.md) for day-to-day operations.
 
@@ -13,7 +13,7 @@ worse than no handoff at all.
 
 The service is deployed on `sdl2-pc-03-cytation` as the NSSM service
 `cytation`, port 8040, reporting STATUS_SPEC **v1.2** against real hardware.
-158 tests pass.
+220 tests pass.
 
 **The Zadig driver swap is retired.** The reader stays on FTDI's vendor
 driver and a D2XX transport shim talks through it (`config.toml` has
@@ -28,9 +28,11 @@ actually tells you it is not communicating.
 | Subsystem | State |
 |---|---|
 | Reader connection, drawer, plate tracking | working |
-| Imaging — brightfield | **verified through REST** on hardware |
-| Imaging — autofocus / auto-exposure | implemented, never run on a real subject |
-| Imaging — phase contrast | driver permits it (firmware 2.09), never imaged |
+| Imaging — brightfield | captures work, but see 2026-09-04: the "4X" frame is a ~0.6× field formed by **no objective**; 20X/40X positions image nothing |
+| Imaging — focus axis | **moves, verified on the wire 2026-09-04** — PyLabRobot's command was malformed below 9.3993 mm; fixed in `_set_focus`. Only accepted at turret code 1 |
+| Imaging — autofocus / auto-exposure | auto-exposure works; autofocus is meaningless until an objective is in the path (§4 of `docs/BENCH_2026-09-04.md`) |
+| Imaging — objective turret | **open**: five of six positions give one identical blank frame; needs a physical look at what is fitted |
+| Imaging — phase contrast | driver permits it (firmware 2.09); same illumination as brightfield on 2026-09-04 (both black through an opaque plate) |
 | Imaging — fluorescence | **blocked**: 4 filter-cube slots, all empty |
 | Incubator | verified to ramp; never confirmed to reach setpoint |
 | Shaker | verified empty; never with liquid |
@@ -74,8 +76,8 @@ day. Detail in `docs/BENCH_2026-08-31.md`.
 | `last_error` auto-clear (§6.4) | **PASS** — a stale `read.luminescence` cleared on the next successful read |
 | Fluorescence reads | **PASS**, first time ever on hardware — 7 command shapes, several wells and wavelength pairs |
 | Luminescence reads | **PASS except any region whose maximum corner is H12** — see below |
-| Imaging autofocus + auto-exposure | **PASS**, first time on a real subject — converged to peak pixel ~200/255 as designed |
-| Objective selection | **FAILS for 40X** — see below |
+| Imaging autofocus + auto-exposure | auto-exposure **PASS**; the autofocus half is **retracted 2026-09-04** — every focus command it issued below 9.3993 mm was rejected by the instrument |
+| Objective selection | ~~FAILS for 40X~~ — **retracted 2026-09-04**, see the bench session below |
 
 ### New bug: luminescence rejects any region ending at H12
 
@@ -97,31 +99,66 @@ Single-well failures come back in 0.1 s (rejected at the start command) while
 whole-plate fails after ~12 s (runs, then the response assertion fails) — two
 different failure points, so there may be two causes.
 
-### New bug: the 40X objective returns the 20X image
+### Retracted 2026-09-04: "the 40X objective returns the 20X image"
 
-`imaging.capture` reports `objective: "O_40X_PL_FL_Phase"` while delivering
-the 20X view. Three independent lines of evidence on the same well:
+The 2026-08-31 evidence was pixel identity between the 20X and 40X frames and
+a timing argument. Both are explained by what the 2026-09-04 turret probe
+found — every turret position other than code 1 produces the **same** blank
+illumination gradient, and the turret demonstrably moves for each code — so
+this was never an objective-selection bug. Kept here so the retraction is as
+visible as the claim was; detail in `docs/BENCH_2026-09-04.md` §5–6.
 
-* image statistics — 20X vs 40X mean absolute difference 2.11 with identical
-  std (16.40 both) and 65 % of pixels within 2 grey levels, i.e. the same
-  frame plus sensor noise; 4X vs 20X differs by 36.32 with only 12 % within 2;
-* timing — the 4X→20X capture took 11.8 s (turret moving), 20X→40X took
-  5.0 s, the same as a capture with no turret change;
-* autofocus returned the identical focal height (8.082841185525986) for 4X
-  and 20X, so it is quantized to a fixed search grid rather than searching
-  per objective.
+### Retracted 2026-09-04: "settle the 4X field of view with a calibration target"
 
-### Open question: the 4X field of view is far wider than 4X
+No target needed. The "4X" frame spans 13.9 mm; PyLabRobot's own `capture()`
+puts a 4X field at 3.474 mm; the ratio is 4.00. The frame also ignores 9 mm
+of proven Z travel. It is not formed by a 4X objective — see below.
 
-A 4X capture spans roughly three wells (~20 mm). On a 2448×2048 sensor with
-3.45 µm pixels, 4X should give ~2.1 mm — a patch *inside* one well. Measured
-well pitch in the image works out at ~8.15 µm/px, an effective ~0.42X. Either
-the reported objective does not match the light path at 4X, or the assumed
-sensor geometry is wrong. **Settle it with a calibration target, not a
-crystallization plate** — a plate with known feature spacing, or the vendor
-objective setup plate (PN 1222531). Anyone sizing crystals from these images
-today could be out by ~10x. Note git history already carries "correct stale
-1.25x-objective claim in capture docstrings", so this area has misled before.
+
+## Bench session 2026-09-04 — the focus axis, and what the turret is doing
+
+Full evidence in `docs/BENCH_2026-09-04.md`. Every item below rests on the
+instrument's own replies, read from the D2XX byte trace
+(`[instrument].ftdi_trace = true`, `scripts/trace_frames.py`).
+
+| Item | Result |
+|---|---|
+| Focus command encoding | **BUG, FIXED** — PLR sends a 6-digit field below 9.3993 mm; the instrument wants 7 and refuses (`570F`, ~15 ms). `_set_focus` pads to 7 and checks the reply. Re-traced: all accepted, latency scales with travel |
+| Focus at 20X / 40X | **refused at every position**, 94 probes at 0.1 mm, plate height irrelevant — the window is per turret code and only code 1 has one |
+| Turret probe (service stopped, raw `P0e01`–`06`) | code 1: plate visible at ~0.6×, Z-independent. Codes 2–6: **one identical blank gradient**, focus refused everywhere. Inventory (`h2–h7`) is condenser annuli, not objectives |
+| Opaque plate | `agilent_96_700ul_square_flat` is ~OD 5.7 to the brightfield LED — cannot be imaged in transmission; LED verified fine on an empty carrier |
+| `5A00` | carrier-stage "motion complete" (`A` close, `W6` well select) — not an error, never was |
+| Manual insert via front-panel button | service keeps `drawer: out`; `drawer.close` resyncs (idempotent). Design options below |
+
+**The one that matters:** everything optical observed since August — the
+4× too-wide field, infinite depth of field, blank 20X/40X, identical frames
+across positions — fits **no objective in the light path at any turret
+position**. Whether the objectives are missing, fitted where the codes don't
+reach, or present with a misrouted camera is a *physical inspection*. Until
+that is done, treat every capture in `captures/` as a ~0.6× overview image,
+not microscopy, and treat `details.imaging.installed_objectives` as "which
+phase annuli the condenser reports", which is what it actually is.
+
+### Human intervention at the drawer
+
+`_drawer` is dead reckoning and the front-panel button makes the service a
+non-exclusive actor, so a stale belief is guaranteed eventually. Three moves,
+in increasing cost; the second is the one to take:
+
+1. **Belief with provenance** — `details.drawer_source: commanded | assumed`.
+   Honest, cheap, stops nothing.
+2. **Ensure-closed instead of refuse** — `read.*` / `imaging.capture` send `A`
+   first rather than 412-ing on a belief. They are already actuation. Keep the
+   412 for a drawer *we* opened and never closed (a genuine known-open);
+   auto-close only when the belief is assumed. Refuse what we know; fix what
+   we merely assume.
+3. **Detect it** — untested whether the firmware volunteers bytes on an eject
+   press. With the trace on and the idle baseline one `h` pair per 4.4 s, it
+   is a one-press experiment.
+
+The asymmetry to remember: a stale `out` is annoying (one `drawer.close`); a
+stale `in` is the dangerous one — plate removed, service never learns, next
+read returns numbers from an empty carrier.
 
 ### The option-A assertion was wrong on day one
 

@@ -6,6 +6,7 @@ Cytation 5 and BioStack 4. Two things live here:
 | Path | Tracked in git? | Purpose |
 |---|---|---|
 | `docs/IMPLEMENTATION.md` | yes | Bench verification plan — what still needs testing on real hardware, what to bring, and what to record. |
+| `docs/BENCH_<date>.md` | yes | Evidence from each bench session, one file per day — what was sent, what the instrument replied, what it proved. `HANDOFF.md` carries the conclusions; these carry the numbers. Later files retract earlier ones in place rather than editing history (`BENCH_2026-09-04.md` supersedes the imaging half of `BENCH_2026-08-31.md`). |
 | `docs/LABSKILLS.md` | yes | Drop-in `lab-skills` skill-catalog patch for the central server, so workflows can drive this device by role. |
 | `docs/PLATE_STATE.md` | yes | How per-well sample tracking works, and the cross-device strategy behind it. |
 | `docs/INDEX.md` | yes | Catalogue of which BioTek/Agilent manuals are useful, and where to get the PDFs from BioTek/Agilent. |
