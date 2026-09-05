@@ -1215,8 +1215,110 @@ class CytationReader:
 
         backend = self._backend
         await backend.set_exposure(exposure_ms)
-        await backend.set_focus(focal_height_mm)
+        await self._set_focus(focal_height_mm)
         return await backend._acquire_image()  # noqa: SLF001 - see capture_image
+
+    # Counts-per-mm for the focus axis. Copied from PyLabRobot's `set_focus`
+    # (which cites R^2 = 0.999999999 for the fit) so the conversion stays
+    # identical; only the wire encoding below differs.
+    _FOCUS_SLOPE = 10.637991436186072
+    _FOCUS_INTERCEPT = 1.0243013203461762
+
+    #: Width of the position field in the instrument's focus command.
+    _FOCUS_FIELD_DIGITS = 7
+
+    #: Status the instrument returns for an accepted focus move.
+    _FOCUS_ACCEPTED = b"0000"
+
+    #: Status it returns when it will not move to the requested position.
+    #: Observed for two distinct causes, so the message below does not
+    #: claim which one applies: a field of the wrong width (any focal
+    #: height below 9.3993 mm as PyLabRobot encodes it), and a position
+    #: outside the legal window for the objective currently in the light
+    #: path (every focal height in 4.5-13.88 mm at 20X and 40X, measured
+    #: 2026-09-04 with 94 probes at 0.1 mm).
+    _FOCUS_REJECTED = b"570F"
+
+    async def _set_focus(self, focal_height_mm: float) -> None:
+        """Move the focus axis, encoding the command the way the instrument wants.
+
+        **Why this exists.** PyLabRobot builds the command as
+        ``F{mode}0{counts:05d}`` — a literal ``0`` then five digits. The
+        instrument's position field is **seven** digits, so PLR's shape is
+        only correct when ``counts`` happens to need six of them, which is
+        true at focal heights >= 9.3993 mm and false everywhere else. The
+        bench trace of 2026-09-04 is unambiguous:
+
+        ============  ==================  ========  ===========
+        focal height  command PLR sends   reply     latency
+        ============  ==================  ========  ===========
+        4.50-9.00 mm  ``F5047876`` ...    ``570F``  15-36 ms
+        9.40-13.5 mm  ``F50100007`` ...   ``0000``  93-204 ms
+        ============  ==================  ========  ===========
+
+        The rejected form answers a constant status in a time too short to
+        contain any travel; the accepted form answers ``0000`` after a delay
+        that scales with the distance moved (0.4 mm -> 123 ms, 1.0 mm ->
+        188 ms, 9.0 mm -> 622 ms). PLR discards the reply, so the rejection
+        was invisible, and every "the focus does not respond" observation in
+        this repo's history was made through it — including the whole of
+        ``captures/20260903T1827_medium_plate_focus_sweep``, whose one and
+        only step in an otherwise flat series sits exactly at the 9.3993 mm
+        boundary.
+
+        **``570F`` is not only about field width.** With the encoding fixed,
+        the 4X objective accepts every position over 4.5-13.88 mm, while 20X
+        and 40X reject all of them — 94 probes at 0.1 mm, and unchanged
+        across declared plate heights of 7.5, 14.5 and 19.0 mm. So the legal
+        window is per-objective and PyLabRobot's single global
+        ``focal_height_range`` describes the 4X only. That is why no 20X or
+        40X frame in this repo has ever been in focus.
+
+        Padding to seven digits restores the lower two thirds of the range.
+        The reply is checked rather than discarded: a focus command that
+        silently does nothing is precisely the failure that cost this
+        project several bench sessions and two wrong conclusions.
+        """
+
+        backend = self._backend
+        if backend is None:
+            raise RuntimeError("Cytation reader is not connected")
+
+        mode = backend._imaging_mode  # noqa: SLF001 - see capture_image
+        if mode is None:
+            raise RuntimeError(
+                "Imaging mode must be set before the focus axis can be moved"
+            )
+        mode_code = backend._imaging_mode_code(mode)  # noqa: SLF001
+
+        counts = int(
+            focal_height_mm
+            + self._FOCUS_INTERCEPT
+            + self._FOCUS_SLOPE * focal_height_mm * 1000
+        )
+        param = f"F{mode_code}{counts:0{self._FOCUS_FIELD_DIGITS}d}"
+        response = await backend.send_command("i", param)
+        status = bytes(response or b"").strip(b"\x06\x03")
+
+        if status != self._FOCUS_ACCEPTED:
+            hint = ""
+            if status == self._FOCUS_REJECTED:
+                hint = (
+                    " — the instrument refused the position and the axis did "
+                    "not move. Either the position is outside the legal window "
+                    "for the objective in the light path (only the 4X is "
+                    "reachable over 4.5-13.88 mm on this unit), or the command "
+                    "field is the wrong width"
+                )
+            raise RuntimeError(
+                f"Cytation refused the focus command {param!r} for "
+                f"{focal_height_mm} mm: status {status.decode(errors='replace')!r}"
+                f"{hint}"
+            )
+
+        # Keep PyLabRobot's cache honest: `capture()` asserts on it, and its
+        # own `set_focus` short-circuits when it matches.
+        backend._focal_height = focal_height_mm  # noqa: SLF001
 
     async def _auto_exposure(
         self,
