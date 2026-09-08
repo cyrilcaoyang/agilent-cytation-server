@@ -262,3 +262,44 @@ def test_metadata_failure_is_visible_and_retains_image(tmp_path, monkeypatch):
         reader._save_capture(np.zeros((2, 2), dtype=np.uint8), well='A1', channel='BRIGHTFIELD',
                              objective='4x', focal_height_mm=10, exposure_ms=8, gain=0)
     assert len(list(tmp_path.rglob('*.png'))) == 1
+
+
+def test_unencodable_metadata_leaves_no_sidecar(tmp_path, monkeypatch):
+    """A sidecar that cannot be encoded must not be left half-written.
+
+    `json.dump` writes incrementally, so a non-finite float — which
+    `allow_nan=False` correctly refuses, since NaN is not valid JSON — used to
+    leave a truncated .json beside a perfectly good .png. A corrupt file that
+    still looks like metadata is worse than no metadata: a consumer walking
+    the capture directory cannot tell it from a complete one without parsing
+    every file. Measured 2026-09-08 against the reassessment branch: a NaN in
+    `tuning` left 950 bytes of partial JSON.
+
+    The image is still retained and the operation still fails visibly, which
+    is what the sidecar contract intends.
+    """
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("PIL.Image")
+
+    reader = CytationReader.__new__(CytationReader)
+    reader._captures_dir = tmp_path
+    reader._plate_id = "plate"
+    reader._plate_model = "square_96_19mm"
+
+    with pytest.raises(ValueError):
+        reader._save_capture(
+            np.full((4, 4), 7, dtype=np.uint8),
+            well="H12",
+            channel="brightfield",
+            objective="O_4X_PL_FL_Phase",
+            focal_height_mm=7.0,
+            exposure_ms=8.1,
+            gain=0.0,
+            led_intensity=10,
+            tuning={"autofocus": {"sharpness": float("nan")}},
+        )
+
+    images = list(tmp_path.rglob("*.png"))
+    sidecars = list(tmp_path.rglob("*.json"))
+    assert len(images) == 1, "the image must survive for investigation"
+    assert sidecars == [], f"a partial sidecar was left behind: {sidecars}"

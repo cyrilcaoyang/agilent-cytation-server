@@ -6,6 +6,93 @@
 
 # Handoff — current state
 
+## Integration review, 8 September — `integrate/reassessed-reliability`
+
+`codex/reassessed-reliability` (`7552c61`) merged onto `b77c2f1` as a clean
+fast-forward — it was already based on the current remote, so there were no
+conflicts and the saturation/refusal work is intact. Combined suite: **299
+passed, 0 failed** against a source path asserted to be the integration tree
+(see the caveat below). **Not merged to `main`, not deployed, hardware not
+commanded.**
+
+### Verified as correct, and worth knowing why
+
+* **The reply-check ordering change fixes a real bug of mine.** I installed the
+  status check *outside* the link lock, so a refusal raised after
+  `link_lock`'s wrapper had already returned. For an ordinary command that is
+  harmless, but `"D"` opens a transaction and deliberately keeps the lock: a
+  refused `"D"` would have raised past `_close_txn`, stranding the serial link
+  until the 60 s transaction timeout reclaimed it. `install_checked_link` puts
+  the check inside the lock, so the transaction closes on the way out.
+* **Claim heartbeats reset the TTL to a hardcoded 30 s** regardless of what was
+  requested. A client asking for 600 s and heartbeating every 200 s would have
+  lost its claim mid-run.
+* **`set_imaging_mode` turns the LED on and used to run outside the `try`,** so
+  any failure between it and `start_acquisition` left the LED on over a live
+  sample with no cleanup path.
+* **Plate persistence updated memory before the write and swallowed `OSError`,**
+  so a full disk left the store and `state.json` silently disagreeing.
+
+### Fixed during this review
+
+* **An unencodable sidecar left a truncated file next to a good image.**
+  `json.dump` writes incrementally, so a non-finite float — which
+  `allow_nan=False` rightly refuses — produced 950 bytes of partial JSON beside
+  a valid PNG (measured). A corrupt file that still looks like metadata is
+  worse than none. The payload is now encoded to a string before the file is
+  created, so a failure leaves the image and no sidecar, which is what
+  "retain the image, fail visibly" is meant to mean. Regression test added.
+  The trigger is currently theoretical: `evaluate_focus_nvmg_sobel` returns
+  `0.0`, not NaN, on the uniform frames this instrument produces today.
+
+### Remaining issues
+
+1. **Capture provenance may silently record `git_revision: null`.**
+   `_software_provenance` shells out to `git`, and Windows services do not
+   inherit the interactive `PATH` (`DEVICE_PC_SETUP.md` §8 documents exactly
+   this class of failure). It resolved correctly from an interactive shell in
+   the live tree and failed with exit 128 from a git worktree. **Check the
+   first sidecar written after deployment carries a real revision** — if it is
+   `null`, the provenance field is decoration.
+2. **The local `.venv.test` cannot run five of these tests.** It has no
+   `numpy`, `PIL` or `pylabrobot`, so both capture-metadata regressions and the
+   new sidecar test skip there. They were exercised directly against the live
+   interpreter instead, which is not the same as a suite run. The CI matrix
+   added on this branch uses the lockfile and would cover them, but **CI has
+   never run**.
+3. **A capture that succeeds but fails cleanup now loses the image.** The
+   `finally` re-raises a `stop_acquisition`/`led_off` failure before
+   `_save_capture` runs, so the frame is never written and the caller gets a
+   503. Defensible — an LED left on is a live-sample hazard and a failed
+   `led_off` usually means the link is already broken — but it converts a
+   cleanup fault into a lost measurement. Worth an explicit decision rather
+   than discovering it mid-campaign.
+4. **Capture timestamps, and therefore capture folder dates, are now UTC.**
+   Correct per the spec, but near local midnight a capture lands in what an
+   operator would call tomorrow's folder.
+5. `PlateStatePersistenceError` is public but absent from
+   `plate_state.__all__`.
+
+### Deploying this branch (supervised)
+
+The live service runs from the working tree, so a merge on `main` *is* a
+staged deployment — the next restart picks it up. Do it deliberately:
+
+1. Confirm the reader is free and nothing is mid-campaign; save `state.json`,
+   `/status`, and the current revision.
+2. `git merge --ff-only integrate/reassessed-reliability` on `main`.
+3. **Do not run `uv sync`.** This branch changes no dependencies, and an
+   earlier `uv` invocation removed the live environment's libraries
+   (`docs/OVERNIGHT_2026-09-08.md`). Verify PySpin still imports with the live
+   interpreter before restarting.
+4. `nssm restart cytation; sc continue cytation` (elevated), then check
+   `/status` for `ready`, `camera_ready`, plate identity and drawer state.
+5. Take one capture on the dedicated test plate and confirm the sidecar exists,
+   parses, and carries a non-null `git_revision`.
+6. Turn `ftdi_trace` back off in `config.toml` when bench work is done — it is
+   still `true` and logs every byte.
+
+
 **Status clarified 2026-09-08; hardware evidence through 2026-09-04.** If you are picking this repo up cold, read this
 first, then [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) for what still
 needs bench time and [`RUNBOOK.md`](RUNBOOK.md) for day-to-day operations.

@@ -1627,8 +1627,18 @@ class CytationReader:
             "pixel_stats": stats,
         }
         # Retain the image if metadata fails, but fail the operation visibly.
+        #
+        # Encode *before* creating the file. `json.dump` writes incrementally,
+        # so a payload it cannot encode — a non-finite float, which
+        # `allow_nan=False` rightly refuses to emit as invalid JSON — leaves a
+        # truncated sidecar sitting next to a perfectly good image. That is a
+        # corrupt file that still looks like metadata, which is worse than no
+        # metadata at all. Encoding first means such a failure leaves no
+        # sidecar, which is what "retain the image, fail visibly" should mean.
+        # (Measured 2026-09-08: a NaN in `tuning` left a 950-byte partial JSON.)
+        document = json.dumps(payload, indent=2, sort_keys=True, allow_nan=False)
         with metadata_path.open("x", encoding="utf-8") as stream:
-            json.dump(payload, stream, indent=2, sort_keys=True, allow_nan=False)
+            stream.write(document)
         return payload
 
 
