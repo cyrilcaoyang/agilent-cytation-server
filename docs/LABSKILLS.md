@@ -198,9 +198,21 @@ class LuminescenceArgs(BaseModel):
 
 
 class ReadResult(BaseModel):
-    """Response body for read.* skills (``dict[well, value]``)."""
+    """Response body for read.* skills.
 
-    wells: dict[str, float]
+    A well whose sample exceeds the detector range comes back with a ``null``
+    value **and** an entry in ``over_range``. Nothing else is ever ``null``,
+    so a caller can treat ``over_range`` as authoritative rather than
+    inferring saturation from a missing number.
+
+    Workflow code fitting a calibration curve **must** check this: on a serial
+    dilution the saturated wells are the highest-concentration points, and
+    dropping them silently produces a well-formed, wrong fit. Dilute and
+    re-read; no gain or integration setting recovers an over-range absorbance.
+    """
+
+    wells: dict[str, float | None]
+    over_range: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

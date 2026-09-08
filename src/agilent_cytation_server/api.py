@@ -404,7 +404,7 @@ def create_app(
             )
         except Exception as exc:
             raise _wrap_runtime(exc) from exc
-        return ReadResponse(wells=wells)
+        return ReadResponse.from_values(wells)
 
     @app.post(
         "/control/read/fluorescence",
@@ -425,7 +425,7 @@ def create_app(
             )
         except Exception as exc:
             raise _wrap_runtime(exc) from exc
-        return ReadResponse(wells=wells)
+        return ReadResponse.from_values(wells)
 
     @app.post(
         "/control/read/luminescence",
@@ -445,7 +445,7 @@ def create_app(
             )
         except Exception as exc:
             raise _wrap_runtime(exc) from exc
-        return ReadResponse(wells=wells)
+        return ReadResponse.from_values(wells)
 
     # ---- incubator + shaker -----------------------------------------
 

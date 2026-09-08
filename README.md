@@ -164,6 +164,30 @@ Bounds mirror what PyLabRobot's BioTek backend enforces itself, so an
 out-of-range request is a 422 naming the field rather than a 500 from inside
 the driver. `focal_height_mm` is 4.5–13.88 on all three reads.
 
+### A saturated well is named, not blanked
+
+All three reads answer with `{wells, over_range}`:
+
+```json
+{"wells": {"A1": 0.2077, "A2": null, "A3": 0.2070}, "over_range": ["A2"]}
+```
+
+A well whose sample absorbs more than the detector's range gets a `null` value
+**and** an entry in `over_range`. Nothing else in `wells` is ever `null` — a
+well the reader returned no data for at all raises before a response is built —
+so `null` means "over range" and `over_range` says which.
+
+The reason for the redundancy is that the instrument reports such a well as
+`*******`, PyLabRobot maps that to NaN, and JSON renders NaN as `null`. Without
+the sibling list a caller cannot tell a saturated well from an unmeasured one,
+and on a serial dilution the saturated wells are the *most concentrated*
+points — so treating them as missing fits the curve to the tail and returns a
+confident wrong slope. Observed live 2026-09-07: a methylene-blue series had
+A2 and H4 over range at 664 nm while the other 34 perimeter wells read fine.
+
+Dilute and re-read to get a number; there is no gain or integration setting on
+an absorbance read that will bring one back into range.
+
 **The reads take no gain parameter, and passing one is a 422.** PyLabRobot's
 Cytation backend exposes no gain control on any read, and silently dropping
 the field would return a plausible number measured at some *other* gain — a

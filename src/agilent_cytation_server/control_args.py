@@ -8,6 +8,8 @@ graduates them to a shared package).
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -94,7 +96,51 @@ class LuminescenceArgs(_StrictArgs):
 
 
 class ReadResponse(BaseModel):
-    wells: dict[str, float]
+    """Per-well measurements, with saturated wells named rather than blanked.
+
+    ``wells`` carries the numbers. A well whose sample absorbs more than the
+    detector's range appears with a ``null`` value **and** in ``over_range``.
+
+    The distinction is the whole point of this shape. The instrument reports
+    such a well as ``*******`` on the wire; PyLabRobot's ``_parse_body`` turns
+    that into ``float("nan")``; and JSON renders NaN as ``null`` — which,
+    without ``over_range``, is indistinguishable from "this well was not
+    measured". On a serial dilution the saturated wells are the *most
+    concentrated* points, so a caller that reads them as missing quietly fits
+    its curve to the tail and reports a confident wrong slope. Measured live
+    2026-09-07: A2 and H4 of a methylene-blue series both saturate at 664 nm
+    while every other well on the plate reads normally.
+
+    ``wells`` carries ``null`` for no other reason: a well the reader returned
+    no data for at all raises in ``_grid_to_wells`` before a response exists.
+    So ``null`` here always means "over range", and ``over_range`` says so
+    explicitly for callers that would otherwise have to guess.
+
+    ``over_range`` preserves the order the wells were requested in.
+    """
+
+    wells: dict[str, float | None]
+    over_range: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Wells whose absorbance exceeded the detector range. Their entry "
+            "in `wells` is null. Dilute and re-read to obtain a value."
+        ),
+    )
+
+    @classmethod
+    def from_values(cls, values: Mapping[str, float]) -> "ReadResponse":
+        """Split a reader's per-well mapping into values plus over-range names."""
+
+        wells: dict[str, float | None] = {}
+        over_range: list[str] = []
+        for name, value in values.items():
+            if isinstance(value, float) and math.isnan(value):
+                wells[name] = None
+                over_range.append(name)
+            else:
+                wells[name] = value
+        return cls(wells=wells, over_range=over_range)
 
 
 # ---------------------------------------------------------------------------
