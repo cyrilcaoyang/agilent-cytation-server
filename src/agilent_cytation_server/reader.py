@@ -268,6 +268,13 @@ class CytationReader:
         from .link_lock import install as _install_link_lock
 
         _install_link_lock(backend)
+        # Outermost, so it sees the reply the caller would have received.
+        # PyLabRobot discards the instrument's status word almost everywhere,
+        # which is how a rejected focus command passed for working code for
+        # four months. See reply_check.py.
+        from .reply_check import install as _install_reply_check
+
+        _install_reply_check(backend)
         self._backend = backend
         self._reader = PlateReader(
             name="cytation_5",
@@ -1227,18 +1234,6 @@ class CytationReader:
     #: Width of the position field in the instrument's focus command.
     _FOCUS_FIELD_DIGITS = 7
 
-    #: Status the instrument returns for an accepted focus move.
-    _FOCUS_ACCEPTED = b"0000"
-
-    #: Status it returns when it will not move to the requested position.
-    #: Observed for two distinct causes, so the message below does not
-    #: claim which one applies: a field of the wrong width (any focal
-    #: height below 9.3993 mm as PyLabRobot encodes it), and a position
-    #: outside the legal window for the objective currently in the light
-    #: path (every focal height in 4.5-13.88 mm at 20X and 40X, measured
-    #: 2026-09-04 with 94 probes at 0.1 mm).
-    _FOCUS_REJECTED = b"570F"
-
     async def _set_focus(self, focal_height_mm: float) -> None:
         """Move the focus axis, encoding the command the way the instrument wants.
 
@@ -1297,24 +1292,21 @@ class CytationReader:
             + self._FOCUS_SLOPE * focal_height_mm * 1000
         )
         param = f"F{mode_code}{counts:0{self._FOCUS_FIELD_DIGITS}d}"
-        response = await backend.send_command("i", param)
-        status = bytes(response or b"").strip(b"\x06\x03")
+        # The refusal itself is caught by reply_check; re-raise with the two
+        # facts the generic handler cannot know — which height was asked for,
+        # and which objective was in the path when it was refused.
+        from .reply_check import CommandRefused
 
-        if status != self._FOCUS_ACCEPTED:
-            hint = ""
-            if status == self._FOCUS_REJECTED:
-                hint = (
-                    " — the instrument refused the position and the axis did "
-                    "not move. Either the position is outside the legal window "
-                    "for the objective in the light path (only the 4X is "
-                    "reachable over 4.5-13.88 mm on this unit), or the command "
-                    "field is the wrong width"
-                )
+        try:
+            await backend.send_command("i", param)
+        except CommandRefused as exc:
+            obj = getattr(getattr(backend, "_objective", None), "name", "unknown")
             raise RuntimeError(
-                f"Cytation refused the focus command {param!r} for "
-                f"{focal_height_mm} mm: status {status.decode(errors='replace')!r}"
-                f"{hint}"
-            )
+                f"Cytation refused focal height {focal_height_mm} mm "
+                f"(command {param!r}, status {exc.status!r}) with objective "
+                f"{obj}. On this unit only turret position 1 accepts any "
+                f"position over 4.5-13.88 mm; 20X and 40X refuse all of them."
+            ) from exc
 
         # Keep PyLabRobot's cache honest: `capture()` asserts on it, and its
         # own `set_focus` short-circuits when it matches.
