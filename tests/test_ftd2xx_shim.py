@@ -257,7 +257,11 @@ def test_empty_enumeration_explains_the_libusbk_case(monkeypatch) -> None:
 
 def test_install_patches_and_is_idempotent() -> None:
     plr_ftdi = pytest.importorskip("pylabrobot.io.ftdi")
-    original_device = plr_ftdi.Device
+    # `Device` exists only when pylibftdi imported; without libusb present it
+    # never gets bound. install() assigns the name and never reads it, so the
+    # patch must work either way -- and the restore must not invent the name.
+    missing = object()
+    original_device = getattr(plr_ftdi, "Device", missing)
     original_resolve = plr_ftdi.FTDI._resolve_device_serial
     try:
         shim.install()
@@ -266,7 +270,10 @@ def test_install_patches_and_is_idempotent() -> None:
         shim.install()  # second call must be a no-op, not a re-patch
         assert plr_ftdi.Device is shim.D2xxDevice
     finally:
-        plr_ftdi.Device = original_device
+        if original_device is missing:
+            del plr_ftdi.Device
+        else:
+            plr_ftdi.Device = original_device
         plr_ftdi.FTDI._resolve_device_serial = original_resolve
         plr_ftdi._d2xx_installed = False
 
