@@ -273,8 +273,13 @@ class CytationReader:
         # which is how a rejected focus command passed for working code for
         # four months. See reply_check.py.
         from .reply_check import install as _install_reply_check
+        from .reply_check import install_body_check as _install_body_check
 
         _install_reply_check(backend)
+        # A read's data does not come back through send_command, so the body
+        # needs its own hook. Without it a refused read surfaces as
+        # `ValueError: subsection not found` from deep inside PyLabRobot.
+        _install_body_check(backend)
         self._backend = backend
         self._reader = PlateReader(
             name="cytation_5",

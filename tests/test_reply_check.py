@@ -138,3 +138,73 @@ def test_every_known_refusal_carries_an_explanation() -> None:
         assert len(status) == 4, status
         assert len(meaning) > 30, status
     assert not set(KNOWN_REFUSALS) & set(KNOWN_BENIGN)
+
+
+# ---------------------------------------------------------------------------
+# Read bodies
+#
+# A read's data does not come back through send_command — PyLabRobot's read_*
+# methods call `_read_until` directly — so the body needs its own hook.
+# ---------------------------------------------------------------------------
+
+
+class _BodyBackend:
+    """Backend exposing just the `_parse_body` + `_plate` surface under test."""
+
+    def __init__(self, size_z: float | None = 19.0) -> None:
+        self.parsed: list[bytes] = []
+        if size_z is None:
+            self._plate = None
+        else:
+            self._plate = type("_P", (), {"get_size_z": lambda self: size_z})()
+
+    def _parse_body(self, body):
+        self.parsed.append(body)
+        return [[1.0]]
+
+
+def test_a_status_word_where_a_grid_belongs_raises_legibly() -> None:
+    """The real failure: PyLabRobot's `body.rindex(b"\\r\\n")` on bytes raises
+    `ValueError: subsection not found`, which the API renders as a 422 saying
+    exactly that — and nothing else."""
+    from agilent_cytation_server.reply_check import install_body_check
+
+    b = _BodyBackend(size_z=19.0)
+    install_body_check(b)
+    with pytest.raises(CommandRefused) as ei:
+        b._parse_body(b"\x155B00\x03")
+    assert ei.value.status == "5B00"
+    msg = str(ei.value)
+    assert "19.0 mm" in msg
+    assert "focal_height_mm" in msg
+    assert b.parsed == []  # never reached the real parser
+
+
+def test_a_real_grid_body_still_parses() -> None:
+    from agilent_cytation_server.reply_check import install_body_check
+
+    b = _BodyBackend()
+    install_body_check(b)
+    body = b"\x0601,1,\r000:00:00.0,244,01,09,1301484\r\n244102\x03"
+    assert b._parse_body(body) == [[1.0]]
+    assert b.parsed == [body]
+
+
+def test_body_check_survives_a_backend_with_no_plate() -> None:
+    """`_plate` is None between loads; the error must still be raised."""
+    from agilent_cytation_server.reply_check import install_body_check
+
+    b = _BodyBackend(size_z=None)
+    install_body_check(b)
+    with pytest.raises(CommandRefused):
+        b._parse_body(b"\x155B00\x03")
+
+
+def test_body_check_is_idempotent() -> None:
+    from agilent_cytation_server.reply_check import install_body_check
+
+    b = _BodyBackend()
+    install_body_check(b)
+    first = b._parse_body
+    install_body_check(b)
+    assert b._parse_body is first

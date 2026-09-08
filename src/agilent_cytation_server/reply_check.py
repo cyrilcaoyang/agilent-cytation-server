@@ -67,6 +67,14 @@ KNOWN_REFUSALS: dict[str, str] = {
         "the instrument refused the read command — its checksum landed in the "
         "rejected 94-99 band, which _pad_for_checksum is supposed to avoid"
     ),
+    # Measured 2026-09-08. Returned as the read *body*, ~6 s after the `O`
+    # start-read has already answered `0000`, when the requested focal height
+    # is below the reachable floor for the loaded plate. See
+    # `install_body_check` for why this one needs a second hook.
+    "5B00": (
+        "the read started but produced no measurement grid — on this unit "
+        "that is an unreachable focal height for the declared plate height"
+    ),
 }
 
 #: Status words seen and understood to be benign, so they are not logged as
@@ -94,6 +102,12 @@ class CommandRefused(RuntimeError):
         super().__init__(f"Cytation refused {shown!r}: status {status!r} — {meaning}")
 
 
+#: Everything that can frame a reply: ACK, ETX, NAK, CR, LF, space, DEL. The
+#: instrument prefixes a refused read body with a control byte that is neither
+#: ACK nor ETX, so stripping only the two obvious ones misses it.
+_FRAMING = bytes(range(0x00, 0x21)) + b"\x7f"
+
+
 def _status_of(response: Any) -> str | None:
     """Return the four-character status word in a reply, or ``None``.
 
@@ -105,7 +119,7 @@ def _status_of(response: Any) -> str | None:
     if not response:
         return None
     try:
-        text = bytes(response).strip(b"\x06\x03\r\n").decode("latin")
+        text = bytes(response).strip(_FRAMING).decode("latin")
     except (TypeError, ValueError):
         return None
     return text if len(text) == 4 else None
@@ -154,3 +168,56 @@ def install(backend: Any) -> None:
         "being discarded",
         ", ".join(sorted(KNOWN_REFUSALS)),
     )
+
+
+def install_body_check(backend: Any) -> None:
+    """Raise a legible error when a read body is a status word, not a grid.
+
+    A second hook is needed because a read's data does **not** come back
+    through ``send_command``: PyLabRobot's ``read_*`` methods call
+    ``_read_until`` directly for the body, so :func:`install` never sees it.
+
+    When the instrument declines to produce a grid it answers with a short
+    status word in the body's place. ``_parse_body`` then runs
+    ``body.rindex(b"\r\n")`` on it and raises ``ValueError: subsection not
+    found`` — the bytes flavour of that message — which the API turns into a
+    422 saying exactly that. It is one of the least useful error messages this
+    service can emit, and it is the *only* thing an operator sees when a read
+    fails this way.
+
+    Measured 2026-09-08: with a 19 mm plate declared, fluorescence and
+    luminescence reads below ~5.7 mm answer ``5B00`` (4.5-5.6 fail, 5.8+
+    work), while the same heights succeed with a 14.5 mm or 7.5 mm plate
+    declared. So the floor rises with plate height and this is geometry, not
+    a fixed instrument limit — which is why the message points at both the
+    focal height and whether the declared model matches the physical plate.
+    """
+
+    if getattr(backend, "_body_check_installed", False):
+        return
+    original = backend._parse_body
+
+    def _parse_body(body: Any) -> Any:
+        status = _status_of(body)
+        if status is not None:
+            meaning = KNOWN_REFUSALS.get(
+                status, "the instrument returned a status word instead of data"
+            )
+            plate_z = None
+            try:
+                plate_z = backend._plate.get_size_z()
+            except Exception:
+                pass
+            where = (
+                f" The loaded plate declares size_z {plate_z:.1f} mm; the"
+                " reachable focal-height floor rises with plate height, so"
+                " raise focal_height_mm or check the declared model matches"
+                " the plate actually in the reader."
+                if plate_z is not None
+                else ""
+            )
+            raise CommandRefused("read body", None, status, meaning + "." + where)
+        return original(body)
+
+    backend._parse_body = _parse_body  # type: ignore[method-assign]
+    backend._body_check_installed = True  # type: ignore[attr-defined]
