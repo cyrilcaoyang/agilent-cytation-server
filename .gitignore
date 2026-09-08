@@ -52,3 +52,7 @@ htmlcov/
 # Claude Code local config
 .claude/
 .venv.test/
+
+# Scratch space for in-flight review/analysis work (Codex, bench probes).
+# Never source; never commit — one `git add -A` swept it in on 2026-09-08.
+.tmp/
