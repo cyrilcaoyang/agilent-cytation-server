@@ -226,7 +226,7 @@ class CytationService:
                     if probe is not None:
                         self.equipment_version = probe() or self.equipment_version
                 self._restore_persisted_plate()
-            except Exception as exc:
+            except (Exception, asyncio.CancelledError) as exc:
                 # A failed setup() has usually already opened the USB
                 # handle. Leaving the half-open reader on self._reader keeps
                 # that handle for the life of the process: the device then
@@ -243,7 +243,8 @@ class CytationService:
                     )
                 finally:
                     self._reader = None
-                self._record_error(exc, "startup")
+                if isinstance(exc, Exception):
+                    self._record_error(exc, "startup")
                 raise
 
     def _restore_persisted_plate(self) -> None:
@@ -253,16 +254,15 @@ class CytationService:
         The store survives a restart; the reader's PyLabRobot ``Plate``
         resource does not. Without this the envelope contradicts itself —
         ``details.loaded_plate`` names a plate while ``plate_in_reader`` is
-        false and every optical action is withheld — and the obvious operator
-        fix (re-POST ``plate.load``) replaces the wells with 96 empty ones,
-        destroying the sample metadata. Restoring here removes both.
+        false and every optical action is withheld. Historically a re-POST of
+        ``plate.load`` also erased the wells; same-ID reload now preserves
+        them, while startup restoration retains the existing behavior.
 
         **What this asserts, and what it does not.** Nothing on this
         instrument reports whether a plate is physically present, so this is
         the service trusting a file about the state of the world. If someone
         lifted the plate out while the service was down, the reader will now
-        claim one is there. That is a deliberate trade — the alternative cost
-        a destroyed well map — but it must not be *invisible*, so
+        claim one is there. That retained behavior must not be *invisible*, so
         ``details.plate_restored_at_startup`` marks a plate that was asserted
         from disk rather than loaded by an operator who was standing there.
         Anything reasoning about a restored plate should treat it as a claim,
@@ -515,28 +515,57 @@ class CytationService:
         move the drawer — that's a separate operation (Phase 3
         ``/control/drawer/{open,close}``).
         """
-        chosen = model or self.default_plate_model
         async with self._lock:
-            # The reader's own resource tree must learn about the plate too,
-            # not just our sample-tracking store: PyLabRobot routes every
-            # read through `PlateReader.get_plate()` and raises NoPlateError
-            # when nothing is assigned. Loading here is what makes
-            # `read.absorbance` and friends reachable at all.
-            if self._reader is not None and self._reader.is_connected():
-                chosen = self._reader.load_plate(plate_id=plate_id, model=chosen)
-            # Someone was here and said so: this plate is observed, not
-            # asserted from disk, whatever startup had claimed.
-            self._plate_restored_at_startup = False
-            return self.plate_state.load_plate(
+            previous = self.plate_state.get()
+            chosen = model or (
+                previous.model if previous and previous.plate_id == plate_id
+                else self.default_plate_model
+            )
+            # Validate before changing the reader's resource tree.
+            candidate = self.plate_state.prepare_load(
                 plate_id=plate_id, model=chosen, wells=wells
             )
+            connected = self._reader is not None and self._reader.is_connected()
+            try:
+                if connected:
+                    self._reader.load_plate(plate_id=plate_id, model=chosen)
+                committed = self.plate_state.commit_plate(candidate)
+            except Exception:
+                if connected:
+                    await self._rollback_reader_plate(previous)
+                raise
+            self._plate_restored_at_startup = False
+            return committed
+
+    async def _rollback_reader_plate(self, previous: LoadedPlate | None) -> None:
+        """Restore resource bookkeeping, or disconnect if rollback fails."""
+        try:
+            if previous is None:
+                self._reader.unload_plate()
+            else:
+                self._reader.load_plate(plate_id=previous.plate_id, model=previous.model)
+        except Exception:
+            logger.exception("Could not restore reader plate assignment after failed update")
+            # A failed rollback must not leave contradictory state available for reads.
+            try:
+                await self._reader.stop()
+            except Exception:
+                logger.exception("Reader disconnect failed during plate rollback")
 
     async def unload_plate(self) -> LoadedPlate | None:
-        """Clear the currently-loaded plate. Returns the prior plate (if any)."""
+        """Clear the plate only when its removal can be persisted."""
         async with self._lock:
-            if self._reader is not None:
-                self._reader.unload_plate()
-            return self.plate_state.unload_plate()
+            previous = self.plate_state.get()
+            try:
+                if self._reader is not None:
+                    self._reader.unload_plate()
+                removed = self.plate_state.unload_plate()
+            except Exception:
+                if self._reader is not None:
+                    await self._rollback_reader_plate(previous)
+                raise
+            self._plate_restored_at_startup = False
+            return removed
 
     async def update_well(
         self,

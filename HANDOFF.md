@@ -1,6 +1,12 @@
+> **Reassessment update, September 8:** the current remote baseline is `b77c2f1`.
+> The revised isolated branch retains Claude's saturation/refusal handling and
+> adds the reliability and heartbeat fixes. Start with
+> [the current to-do list](docs/TODO_2026-09-08.md); historical notes below are
+> superseded where they conflict with that list. No deployment was performed.
+
 # Handoff — current state
 
-**Last updated 2026-09-04.** If you are picking this repo up cold, read this
+**Status clarified 2026-09-08; hardware evidence through 2026-09-04.** If you are picking this repo up cold, read this
 first, then [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) for what still
 needs bench time and [`RUNBOOK.md`](RUNBOOK.md) for day-to-day operations.
 
@@ -13,7 +19,10 @@ worse than no handoff at all.
 
 The service is deployed on `sdl2-pc-03-cytation` as the NSSM service
 `cytation`, port 8040, reporting STATUS_SPEC **v1.2** against real hardware.
-220 tests pass.
+The isolated reliability branch has its own validation report; it is not deployed.
+The current capability matrix and morning checklist are in
+[`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md). That matrix supersedes
+stale capability claims in the historical sections below.
 
 **The Zadig driver swap is retired.** The reader stays on FTDI's vendor
 driver and a D2XX transport shim talks through it (`config.toml` has
@@ -28,7 +37,7 @@ actually tells you it is not communicating.
 | Subsystem | State |
 |---|---|
 | Reader connection, drawer, plate tracking | working |
-| Imaging — brightfield | captures work, but see 2026-09-04: the "4X" frame is a ~0.6× field formed by **no objective**; 20X/40X positions image nothing |
+| Imaging — brightfield | captures work, but see 2026-09-04: the nominal "4X" frame is an overview; the missing/misrouted-objective hypothesis needs physical confirmation |
 | Imaging — focus axis | **moves, verified on the wire 2026-09-04** — PyLabRobot's command was malformed below 9.3993 mm; fixed in `_set_focus`. Only accepted at turret code 1 |
 | Imaging — autofocus / auto-exposure | auto-exposure works; autofocus is meaningless until an objective is in the path (§4 of `docs/BENCH_2026-09-04.md`) |
 | Imaging — objective turret | **open**: five of six positions give one identical blank frame; needs a physical look at what is fitted |
@@ -37,7 +46,7 @@ actually tells you it is not communicating.
 | Incubator | verified to ramp; never confirmed to reach setpoint |
 | Shaker | verified empty; never with liquid |
 | Reads — absorbance | **verified on hardware**, matches a Gen5 sweep |
-| Reads — fluorescence / luminescence | never completed on hardware |
+| Reads — fluorescence / luminescence | completed August 31; luminescence regions ending at H12 fail, including full plate |
 | Incubator — sub-ambient setpoint | never commanded; 18 °C is only the *declared* floor |
 
 Absorbance landed 2026-08-23/24 (A1 0.0841 vs Gen5's 0.084, C5 2.5394 vs
@@ -50,7 +59,7 @@ discards the extra wells. 41-93 are unreachable with a single-well region and
 remain untested, so the guard is conservative. The earlier "column 1 is
 unreadable" finding was wrong and is retracted.
 
-Fluorescence and luminescence are now the read-path gap — see
+Quantitative fluorescence qualification and the luminescence H12 failure are now read-path gaps — see
 [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
 **Incubator temperature is unreadable while the shaker runs** (measured
@@ -211,7 +220,7 @@ instead of a 500.
 
 ## Still to do
 
-1. **Bench-verify the reads** — [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
+1. **Resolve optics and qualify remaining read limitations** — [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 2. ~~**Apply the skill-catalog patch**~~ — applied 2026-08-19 in
    `ac-organic-lab`: 15 SkillDefs matching the live OpenAPI, plus a typed
    `PlateReaderClient`. See [`docs/LABSKILLS.md`](docs/LABSKILLS.md).
@@ -264,7 +273,7 @@ touch `plate.load` on a plate that matters.
 **Resolved 2026-08-31 by re-assigning the plate at startup** (option A).
 `_restore_persisted_plate` now hands the store's plate back to the reader
 after a successful connect, so a restart no longer produces the
-contradiction or the pressure to re-`plate.load` blind. Footgun (2) still
+contradiction or the pressure to re-`plate.load` blind. On the deployed September 4 code, footgun (2) still
 exists — `plate.load` without `wells` still blanks them — but you no longer
 have a reason to reach for it after a restart.
 

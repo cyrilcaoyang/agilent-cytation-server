@@ -29,6 +29,10 @@ from .plates import known_models
 logger = logging.getLogger(__name__)
 
 
+class PlateStatePersistenceError(RuntimeError):
+    """A plate update could not be committed to durable storage."""
+
+
 _ROW_LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H"]
 
 
@@ -50,9 +54,10 @@ class PlateStateStore:
 
     Single-plate model: the Cytation has one stage, so at most one
     :class:`LoadedPlate` is "in" at any time. ``plate.load`` overwrites
-    any existing plate (the orchestrator is expected to call
+    another plate ID; a same-ID reload without wells preserves its map.
+    The orchestrator is expected to call
     ``plate.unload`` first; the model does not enforce it because the
-    plate may have been physically removed during a hardware reset).
+    plate may have been physically removed during a hardware reset.
     """
 
     def __init__(self, *, state_path: str | Path) -> None:
@@ -76,11 +81,31 @@ class PlateStateStore:
         model: str,
         wells: list[WellSample] | None = None,
     ) -> LoadedPlate:
+        with self._lock:
+            plate = self._prepare_load_locked(plate_id=plate_id, model=model, wells=wells)
+            self._commit_locked(plate)
+            return plate.model_copy(deep=True)
+
+    def prepare_load(
+        self, *, plate_id: str, model: str, wells: list[WellSample] | None = None
+    ) -> LoadedPlate:
+        """Validate a proposed load without changing the store or the reader."""
+        with self._lock:
+            return self._prepare_load_locked(plate_id=plate_id, model=model, wells=wells)
+
+    def _prepare_load_locked(
+        self, *, plate_id: str, model: str, wells: list[WellSample] | None
+    ) -> LoadedPlate:
         if model not in known_models():
             raise ValueError(
                 f"Unknown plate model {model!r}. Known: {known_models()}"
             )
-        wells = wells if wells is not None else self._empty_wells_96()
+        if wells is None:
+            wells = (
+                self._plate.wells
+                if self._plate is not None and self._plate.plate_id == plate_id
+                else self._empty_wells_96()
+            )
         self._validate_wells(wells)
         plate = LoadedPlate(
             plate_id=plate_id,
@@ -88,16 +113,21 @@ class PlateStateStore:
             loaded_at=datetime.now(timezone.utc),
             wells=wells,
         )
-        with self._lock:
-            self._plate = plate
-            self._persist_locked()
         return plate.model_copy(deep=True)
+
+    def commit_plate(self, plate: LoadedPlate) -> LoadedPlate:
+        """Persist a validated load, then publish it in memory."""
+        with self._lock:
+            self._validate_wells(plate.wells)
+            if plate.model not in known_models():
+                raise ValueError(f"Unknown plate model {plate.model!r}")
+            self._commit_locked(plate)
+            return plate.model_copy(deep=True)
 
     def unload_plate(self) -> LoadedPlate | None:
         with self._lock:
             previous = self._plate
-            self._plate = None
-            self._persist_locked()
+            self._commit_locked(None)
         return previous.model_copy(deep=True) if previous else None
 
     def update_well(
@@ -130,8 +160,9 @@ class PlateStateStore:
                         volume_ul=new_volume,
                         notes=new_notes,
                     )
-                    self._plate.wells[i] = updated
-                    self._persist_locked()
+                    candidate = self._plate.model_copy(deep=True)
+                    candidate.wells[i] = updated
+                    self._commit_locked(candidate)
                     return updated.model_copy(deep=True)
             raise LookupError(f"Well {well!r} not in loaded plate")
 
@@ -158,6 +189,9 @@ class PlateStateStore:
         except (OSError, json.JSONDecodeError):
             logger.exception("state.json at %s is unreadable; ignoring", self._path)
             return
+        if not isinstance(raw, dict):
+            logger.error("state.json at %s is not an object; ignoring", self._path)
+            return
         plate_raw = raw.get("plate")
         if not plate_raw:
             return
@@ -166,17 +200,20 @@ class PlateStateStore:
         except Exception:
             logger.exception("state.json at %s has malformed plate; ignoring", self._path)
 
-    def _persist_locked(self) -> None:
+    def _commit_locked(self, plate: LoadedPlate | None) -> None:
         body: dict[str, Any] = {
-            "plate": self._plate.model_dump(mode="json") if self._plate else None,
+            "plate": plate.model_dump(mode="json") if plate else None,
         }
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._path.with_suffix(self._path.suffix + ".tmp")
             tmp.write_text(json.dumps(body, indent=2, sort_keys=True), encoding="utf-8")
             tmp.replace(self._path)
-        except OSError:
-            logger.exception("Failed to persist plate state to %s", self._path)
+        except OSError as exc:
+            raise PlateStatePersistenceError(
+                f"Failed to persist plate state to {self._path}; update was not committed"
+            ) from exc
+        self._plate = plate.model_copy(deep=True) if plate else None
 
 
 __all__ = ["PlateStateStore", "well_ids_96"]

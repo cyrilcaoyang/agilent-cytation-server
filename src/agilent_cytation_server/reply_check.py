@@ -170,6 +170,33 @@ def install(backend: Any) -> None:
     )
 
 
+def install_checked_link(backend: Any) -> None:
+    """Keep refusal detection inside the serial transaction's cleanup boundary."""
+    if getattr(backend, "_checked_link_installed", False):
+        return
+    if getattr(backend, "_link_lock_installed", False):
+        raise RuntimeError("Install checked-link handling on a backend before its link lock")
+    from .link_lock import install as install_lock
+
+    install(backend)
+    install_lock(backend)
+    backend._checked_link_installed = True
+
+
+def require_status(response: Any, *, command: str, expected: str) -> None:
+    """Require a known acknowledgement where the command's success is established.
+
+    The general checker remains conservative for undocumented commands. A
+    caller with a known success reply must not equate absence of a known
+    refusal with confirmed success.
+    """
+    if _status_of(response) != expected:
+        raise RuntimeError(
+            f"Cytation did not confirm {command}: expected status {expected!r}, "
+            f"received {response!r}"
+        )
+
+
 def install_body_check(backend: Any) -> None:
     """Raise a legible error when a read body is a status word, not a grid.
 

@@ -25,7 +25,7 @@ from .models import TEMPERATURE_MAX_C, TEMPERATURE_MIN_C, WellSample
 class PlateLoadArgs(BaseModel):
     plate_id: str = Field(..., min_length=1, max_length=128)
     model: str | None = None  # defaults to [plates].default_model
-    wells: list[WellSample] | None = None  # defaults to 96 empty wells
+    wells: list[WellSample] | None = None  # preserve same plate; new ID gets 96 empty wells
 
 
 class WellUpdateArgs(BaseModel):

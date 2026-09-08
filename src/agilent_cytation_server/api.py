@@ -341,11 +341,8 @@ def create_app(
                 model=body.model,
                 wells=body.wells,
             )
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=http_status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=str(exc),
-            ) from exc
+        except Exception as exc:
+            raise _wrap_runtime(exc) from exc
 
     @app.post(
         "/control/plate/unload",
@@ -356,7 +353,10 @@ def create_app(
         x_claim_token: str | None = Header(default=None, alias="X-Claim-Token"),
     ) -> LoadedPlate | None:
         _enforce_claim(x_claim_token)
-        return await service.unload_plate()
+        try:
+            return await service.unload_plate()
+        except Exception as exc:
+            raise _wrap_runtime(exc) from exc
 
     @app.post(
         "/control/well/update",
@@ -385,6 +385,8 @@ def create_app(
                 else http_status.HTTP_422_UNPROCESSABLE_ENTITY
             )
             raise HTTPException(status_code=code, detail=str(exc)) from exc
+        except Exception as exc:
+            raise _wrap_runtime(exc) from exc
 
     # ---- reads ------------------------------------------------------
 

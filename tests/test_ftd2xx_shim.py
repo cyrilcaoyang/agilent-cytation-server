@@ -11,6 +11,8 @@ PC normally runs libusbK. Bench verification is tracked in
 from __future__ import annotations
 
 import pytest
+import sys
+from types import ModuleType
 
 from agilent_cytation_server import ftd2xx_shim as shim
 
@@ -76,7 +78,17 @@ class FakeHandle:
 
 
 @pytest.fixture
-def dev() -> shim.D2xxDevice:
+def dev(monkeypatch) -> shim.D2xxDevice:
+    # Unit tests must not load the vendor DLL. Only the wrapper's constants
+    # are needed for these fake-handle exchanges (FTDI defines: RX=1, TX=2).
+    module = ModuleType("ftd2xx")
+    defines = ModuleType("ftd2xx.defines")
+    defines.FLOW_RTS_CTS = 0x0100
+    defines.PURGE_RX = 1
+    defines.PURGE_TX = 2
+    module.defines = defines
+    monkeypatch.setitem(sys.modules, "ftd2xx", module)
+    monkeypatch.setitem(sys.modules, "ftd2xx.defines", defines)
     d = shim.D2xxDevice(lazy_open=True, device_id="23030927")
     d._handle = FakeHandle()
     return d

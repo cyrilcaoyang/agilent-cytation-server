@@ -82,12 +82,17 @@ In production on `sdl2-pc-03-cytation`:
 
 Every mutation that lands inside the service —
 `load_plate`, `unload_plate`, `update_well` — calls
-`PlateStateStore._persist_locked()`, which:
+`PlateStateStore._commit_locked(candidate)`, which:
 
-1. Serialises the current state to JSON (`indent=2`, `sort_keys=True`
+1. Serialises the proposed state to JSON (`indent=2`, `sort_keys=True`
    for diffability).
 2. Writes to `state.json.tmp` in the same directory.
 3. Renames `state.json.tmp` → `state.json` (atomic on Windows + POSIX).
+4. Publishes the new in-memory state only after the rename succeeds.
+
+Write failures raise `PlateStatePersistenceError` (HTTP 503); memory and the
+prior file remain unchanged. The service validates proposed loads before
+changing reader resources and restores the prior assignment if commit fails.
 
 `os.replace` is atomic, so an interrupted write **cannot** leave a
 half-written `state.json`. A reader that opens the file mid-rename
@@ -111,10 +116,10 @@ Everything in `state.json`. After `nssm restart cytation`:
 - `details.loaded_plate.wells[].volume_ul` — preserved.
 - `details.loaded_plate.wells[].notes` — preserved.
 - The drawer state (`details.drawer`), `read_count`, `last_read_at`
-  — **lost**, recomputed from scratch. The device does not assume
-  a plate is physically present just because `state.json` says so;
-  if the operator pulled the plate while the service was down,
-  the orchestrator should call `plate.unload` on first reconnect.
+  — **lost**, recomputed from scratch. Startup currently reassigns the
+  persisted plate to the reader and marks `plate_restored_at_startup: true`.
+  This is an assertion, not a physical observation. Verify the actual plate
+  before actuation; use `plate.unload` if it is absent.
 
 ### Corruption handling
 
@@ -318,7 +323,13 @@ that need the same structured field, promote it to a first-class
 `WellSample` attribute (and add a migration for any in-flight
 `state.json` files).
 
-### `plate.load` is destructive
+### Reasserting versus replacing a plate
+
+Reloading the same ID with `wells` omitted preserves its well map. An omitted
+`model` also preserves that plate's model. An explicit `wells` list still
+replaces the map, including an explicit empty list. These semantics are
+prepared in the September 8 branch and need deployment before clients rely
+on them; older deployed code blanks wells when the list is omitted.
 
 Calling `plate.load` with a new `plate_id` overwrites whatever
 plate was previously loaded, even if you forgot to `plate.unload`

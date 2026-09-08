@@ -1,253 +1,126 @@
-# Bench verification plan
+# Current capability matrix and supervised bench plan
 
-**Written 2026-08-12 for a bench session on 2026-08-13.** Everything below
-needs a human at `sdl2-pc-03-cytation` with a physical plate. The service,
-drivers and REST surface are already deployed and healthy; what is missing is
-the half of the write surface that cannot be exercised on an empty reader.
+Updated **2026-09-08**. Hardware evidence now includes the **September 8** read-focus checks recorded
+in commit `866a830`; the revised reliability branch is prepared separately and
+**has not been deployed**. See [the current to-do list](TODO_2026-09-08.md).
+This document supersedes the August 12 bench plan. Historical evidence is in
+[BENCH_2026-09-04.md](BENCH_2026-09-04.md) and
+[BENCH_2026-08-31.md](BENCH_2026-08-31.md).
 
-Read [`RUNBOOK.md`](../RUNBOOK.md) for day-to-day operations (driver swaps,
-logs, restart). This file is only the test plan.
+## What is established
 
----
-
-## 0. State before you start
-
-| Thing | Expected | How to check |
+| Capability | Evidence / limitation | Next acceptance check |
 |---|---|---|
-| Service | `RUNNING` | `sc.exe query cytation` |
-| Envelope | `equipment_status: ready` | `curl http://127.0.0.1:8040/status` |
-| Camera | `camera_ready: true` | `details.imaging.camera_ready` |
-| FTDI driver | bound to **libusbK** | `Get-PnpDevice \| ? InstanceId -match VID_0403` → `Class: libusbk devices` |
-| Firmware | `2.09` | `equipment_version` |
-| Git branch | `main` | `git -C C:\Users\sdl2\Projects\agilent-cytation-server branch --show-current` |
+| D2XX connection, drawer commands | Vendor FTDI driver is the deployed path. Gen5 and the service require exclusive access. | Verify the running service and actual plate before tests. No Zadig swap. |
+| Plate metadata | Persisted and restored at startup; physical identity/presence is not sensed. Front-panel intervention can leave drawer state stale. | Match physical plate ID, geometry, contents, and orientation to the saved record. |
+| Absorbance | Completed on hardware and compared with Gen5, August 23/24. Checksum workaround is in place. | A blank and reference well provide a useful session baseline. |
+| Fluorescence plate reads | Commands completed August 31 across seven shapes. This establishes the read path, not quantitative assay calibration. | Compare a suitable standard and blank with Gen5 using recorded settings. |
+| Read focus / refusals | September 8: the tested 19 mm plate model refused 4.5–5.6 mm with `5B00`; 5.8 mm and above worked. General command and read-body checks now surface refusals. | Match the physical geometry and validate the usable range; do not assume this resolves H12. |
+| Saturation | `over_range` names saturated wells whose values serialize as null. | Verify consumers handle saturation explicitly. |
+| Luminescence | Reads completed except regions ending at H12; a full plate also fails. | Compare H11, G12, H12, and full plate with Gen5, one case at a time. |
+| Camera / brightfield captures | Frames and auto-exposure work. Observed field and focus behavior do not establish working microscopy. | Obtain a focused, credible-magnification image in Gen5 first, then reproduce via API. |
+| Focus encoding | Seven-digit fix bench-verified September 4. Code 1 accepted the tested positions; other tested codes refused them. | Small focus series only after confirming the optical path; no further broad blind sweeps. |
+| Objectives / phase contrast | Reported configuration may describe condenser annuli. Missing or misrouted objectives remain hypotheses requiring physical confirmation. | Verify fitted optics and Gen5 configuration through normal operator access. |
+| Fluorescence imaging | Four cube slots reported empty; optical path also unresolved. | Confirm fit-out before deciding on parts. |
+| Incubator | Ramp observed; stable arrival at setpoint and sub-ambient performance unverified. API range 18–65 °C is declared capability, not proof of performance. | Reach and hold an appropriate setpoint on a dedicated test plate; record time and stability. |
+| Shaker | Empty operation and stop/link recovery verified. Liquid behavior unverified. Temperature cannot be queried reliably while shaking. | Short observed liquid test, then stop, read temperature, and verify link recovery. |
 
-> **The live service runs from whatever is checked out.** The venv holds an
-> editable install pointing at the working tree, so there is no build step
-> between `git checkout` and what the instrument does. The work described here
-> was merged to `main` on 2026-08-12 and the PC is on `main`, so you can leave
-> the checkout alone. Do not switch branches mid-session without stopping the
-> service — a checkout that predates a fix reverts the reader silently, and you
-> will not find out until the next restart.
+An HTTP 200, a camera connection, or a firmware acknowledgement is not by
+itself a validated scientific measurement. In particular, do not label the
+existing overview frames as calibrated 4× microscopy.
 
-Claims are **enforced**, so every `/control/*` call needs an `X-Claim-Token`.
-Get one with `POST /control/claim {owner, session_id}` and release it at the
-end. The helper script in §6 does this for you.
+## Morning sequence
 
----
+1. **Identify and preserve.** Check the actual plate before any movement,
+   heating, or shaking. Save `state.json`, `/status`, the current Git revision,
+   and the service log tail. Use a dedicated test plate; do not assume the
+   plate restored from disk is the one currently on the carrier. Avoid
+   `plate.load` without the complete well map on the currently deployed code.
+2. **Resolve optics in Gen5 (45–60 minutes).** Stop the NSSM `cytation` service
+   before opening Gen5. Keep the vendor FTDI driver. Verify what optics are
+   fitted/configured through normal operator access, and use a clear-bottom
+   test plate or suitable calibration target. Record objective, well, plate
+   geometry, exposure, gain, focus, image dimensions, and scale. A Gen5
+   "Ready" label is not proof of communication; verify an actual acquisition.
+   If Gen5 cannot form a focused image, stop software focus experiments and
+   resolve the hardware/configuration question.
+3. **Compare the API (about 30 minutes).** Close Gen5 and confirm it releases
+   the instrument, then start the service. Physically verify the test plate
+   again. Match the Gen5 well, objective, gain, and LED intensity; use fixed exposure and at most
+   five nearby focus positions. The helper exposes `--gain` and `--led-intensity`
+   (defaults 0 and 10). Save images and the D2XX trace. Judge actual
+   image structure and scale, not only a focus-score maximum.
+4. **Luminescence boundary (about 30 minutes).** Use the same dedicated test
+   plate/settings in Gen5 and the API. Test H11, G12, H12, and full plate
+   separately. Record both the command rejection and any response-parser
+   failure. After a failure inspect status and the trace before the next case;
+   no automated retry, reconnect, checksum padding, or omission of H12.
+5. **Thermal/shaker qualification if time remains.** Use a dedicated liquid
+   plate, record ambient temperature and fill volume, reach and hold the
+   selected setpoint, then perform a short observed shake. Start with the
+   previously tested displacement of 3 mm. Stop shaking before temperature
+   reads, then check link recovery. Do not start an unattended campaign.
 
-## 1. What to bring
+The desired deliverable is a focused Gen5 image and matching API image, **or
+an explicit hardware/configuration blocker**, plus an H12 comparison journal.
 
-- **A 96-well plate that fits `agilent_shallow_96` or `custom_96`** (geometry
-  is in `config.toml`). Clear flat bottom for imaging.
-- **An absorbance standard.** Anything with a known peak works for a first
-  pass — a dye dilution series, or even food colouring, is enough to prove the
-  read path returns sane, well-varying numbers. A blank column matters more
-  than a certified standard: it gives you the baseline to compare against.
-- **A fluorescent standard** if you want to test FL — fluorescein (ex 485 /
-  em 528) is the obvious choice and is within the 250–700 nm range.
-- **Optional: something visible under 4×** for the imaging tests. Cells,
-  beads, or printed text under the plate all work for confirming focus.
-- **Black-walled clear-bottom plates** if you have them — worth comparing
-  against a clear-walled plate for the glare question.
+## Repeatable API helper
 
-You do **not** need any new hardware for tests 1–7. Fluorescence *imaging*
-(as opposed to fluorescence reads) is the one thing blocked on a purchase —
-the filter wheel reports 4 slots, all empty.
+`scripts/bench_check.py` uses only the Python standard library and talks to
+the already running API. It never opens USB, restarts the service, changes
+USB drivers, heats, or shakes. Without `--execute`, it prints a plan and makes
+no connection. Run with an existing interpreter directly; avoid `uv run`
+without `--no-sync` on the device PC because PySpin is installed separately.
 
----
-
-## 2. Test 1 — absorbance read (the important one)
-
-**This is the only major path never verified on hardware.** The plumbing is
-fixed and correct as far as it can be checked without a plate, but on an empty
-carrier the driver's acknowledgement assertion fails, so the last unknown is
-whether a real read completes.
-
-```
-POST /control/plate/load        {"plate_id": "bench_20260813", "model": "agilent_shallow_96"}
-POST /control/read/absorbance   {"wells": ["A1"], "wavelength_nm": 600}
-```
-
-Expected: `200` with `{"wells": {"A1": <float>}}`.
-
-Then widen: several wells including a blank, and a wavelength where your dye
-actually absorbs. Check that blanks read near zero and that wells differ from
-each other — a read that returns identical values for every well is a bug, not
-a measurement.
-
-**If it fails**, the response now carries a real message instead of the empty
-`{"detail": ""}` it used to. Capture:
+Examples from the checkout containing this helper (PowerShell):
 
 ```powershell
-Get-Content C:\SDL_Logs\cytation.err.log -Tail 40
+# Snapshot only: no claim or /control request.
+.\.venv\Scripts\python.exe scripts\bench_check.py snapshot --execute
+
+# Inspect the plan first. Use the objective/focus established in Gen5.
+.\.venv\Scripts\python.exe scripts\bench_check.py imaging `
+  --plate-id bench_20260908 --objective O_4X_PL_FL_Phase `
+  --focus-mm 9.8 10.0 10.2 --exposure-ms 8
+
+# Only after physically confirming the dedicated test plate and closed drawer:
+.\.venv\Scripts\python.exe scripts\bench_check.py imaging `
+  --plate-id bench_20260908 --objective O_4X_PL_FL_Phase `
+  --focus-mm 9.8 10.0 10.2 --exposure-ms 8 --execute --confirm-test-plate
+
+.\.venv\Scripts\python.exe scripts\bench_check.py luminescence `
+  --plate-id bench_20260908 --case H11 --execute --confirm-test-plate
+# Repeat separately with --case G12, H12, and full after inspecting each result.
 ```
 
-The most likely failure is still an `AssertionError` from
-`biotek_backend.py:373` — the instrument rejecting the command. If that
-happens *with* a plate loaded, the next thing to check is whether the drawer
-is physically closed (our `drawer` state is assumed at startup, not observed),
-then whether the plate geometry in `config.toml` matches the plate you used.
+The helper requires the matching plate to already be assigned, the API to be
+ready/idle, and the drawer to be recorded in. Your physical confirmation is
+still essential: the service's drawer state is an estimate. It claims the
+reader, checks state again, and reasserts a restored plate **with its complete
+well map**, which is compatible with the older service. Heartbeats run every
+five seconds; a heartbeat failure stops subsequent measurements. Claims are
+released in cleanup. A timed-out request may still be executing on the
+instrument: inspect before retrying.
 
-## 3. Test 2 — fluorescence and luminescence
+Each run gets a unique `captures/bench_<UTC>_<id>/` journal containing the
+request parameters, response/error, status code, and elapsed time. Claim tokens
+are excluded. API images remain at the server-returned paths; the helper does
+not silently copy remote files. Add the Gen5 export, settings screenshots,
+physical observations, and trace to the same evidence folder. Use `--output`
+for an explicit archive location.
 
-```
-POST /control/read/fluorescence {"wells": ["A1"], "excitation_nm": 485, "emission_nm": 528}
-POST /control/read/luminescence {"wells": ["A1"], "focal_height_mm": 7.0}
-```
+## Before deploying tonight's changes
 
-Ranges are enforced client-side, so out-of-band values give you a 422 naming
-the field rather than a driver crash: absorbance 230–999 nm, ex/em 250–700 nm,
-focal height 4.5–13.88 mm.
+The revised branch retains remote saturation/refusal handling, requires a
+confirmed focus acknowledgement, releases the transaction lock on refused
+setup commands, and preserves claim TTL across heartbeats. It also preserves
+wells on same-ID reload, rejects invalid plate
+loads before changing the reader, rolls back failed persistence, handles
+startup cancellation, improves capture cleanup, and saves unique PNG/JSON
+pairs. Explicit `wells` still replaces the supplied map; another plate ID starts
+with empty wells. Restored-plate and manual-drawer uncertainty remain.
 
-**Note there is no `gain` parameter and passing one is a 422.** PyLabRobot's
-Cytation backend exposes no gain control on any read. If your fluorescence
-signal is weak, the levers are focal height and the sample itself — not gain.
-
-## 4. Test 3 — imaging on a real sample
-
-Brightfield through REST is already verified (2026-08-12, 2448×2048 PNG in
-`captures/`), but only on an empty light path. With a sample:
-
-```
-POST /control/imaging/capture {"well": "A1", "channel": "brightfield",
-                               "objective": "O_4X_PL_FL_Phase",
-                               "focal_height_mm": 10.0, "exposure_ms": 8}
-```
-
-Then the two things worth learning:
-
-**Autofocus / auto-exposure.** Both are implemented but have never run against
-a real subject, where the sharpness and exposure metrics actually have
-something to bite on:
-
-```
-POST /control/imaging/capture {"well": "A1", "channel": "brightfield",
-                               "autofocus": true, "auto_exposure": true}
-```
-
-The response echoes the **resolved** `focal_height_mm` and `exposure_ms`, with
-the search detail under `details.tuning`. Compare the resolved focal height
-against what you'd pick by eye. Each search round is a real exposure, capped at
-8 rounds.
-
-**Phase contrast.** Firmware 2.09 means the driver permits it
-(`details.imaging.phase_contrast_available: true`) and all three objectives are
-`PL_FL_Phase`, but it has never been imaged here:
-
-```
-POST /control/imaging/capture {"well": "A1", "channel": "phase_contrast"}
-```
-
-If it errors, the likely cause is the phase annulus not being in the condenser
-— a hardware/setup issue, not software. This is the most promising answer to
-the glare question, so it is worth the attempt on an unstained sample.
-
-## 5. Test 4 — incubator and shaker with a plate in
-
-Both were verified empty on 2026-08-12 (30 °C → `heating` / "Ramping to
-30.0 C"; shake start → `activity: running`). What is still unknown:
-
-- **Does it actually reach setpoint?** Set 37 °C, then poll `/status` until
-  `components.incubator.state` flips from `heating` to `at_setpoint`. Time it.
-  If it never arrives, the tolerance band is `_TEMPERATURE_TOLERANCE_C = 0.5`
-  in `service.py`.
-- **Does cooling work? Probably not — and the range is wrong at both ends.**
-  The driver hardcodes `supports_cooling = True` and clamps to an absolute
-  4–45 °C. The Cytation 5 spec sheet gives the incubator as **4 °C above
-  ambient → 65 °C**, i.e. heating-only, which makes PyLabRobot's "4 °C" look
-  like an absolute-vs-relative misreading and its 45 °C ceiling ~20 °C short
-  of the instrument. Two things to settle at the bench:
-  - set something below ambient and see whether the reading actually falls
-    (expect: no);
-  - note that 50 °C is currently **refused with a 422** by our arg model even
-    though the instrument supports it. If you need above 45 °C, that bound
-    lives in `control_args.py::TemperatureArgs` and in the driver — widening
-    ours alone is not enough, since `set_temperature` re-checks the driver's
-    `temperature_range`.
-- **Shaking with liquid in the wells.** Empty shaking proves the command
-  works; it says nothing about splashing at a given displacement. Start at
-  `displacement_mm: 3` and watch before trusting 1 (which is the *fastest*
-  setting — the parameter runs inversely to speed).
-
-Remember the 16-minute ceiling: PyLabRobot re-issues the shake command each
-time it lapses and warns the door may briefly open at the boundary. Do not
-leave it shaking unattended.
-
-## 6. Running the tests
-
-The scratch scripts used on 2026-08-12 are a working starting point — they do
-the claim/release dance and print the interesting fields:
-
-- `verify_read.py` — claim → plate.load → absorbance → status → unload
-- `verify_capture.py` — claim → plate.load → brightfield capture → DAPI refusal
-- `verify_new.py` — identity → incubator → shaker
-
-They are not committed (they live in the session scratchpad). If you want them
-in the repo, `scripts/capture_a1.py` is the existing model to follow.
-
-A minimal manual session:
-
-```powershell
-$body = @{owner="bench"; session_id=[guid]::NewGuid().ToString()} | ConvertTo-Json
-$claim = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8040/control/claim -Body $body -ContentType application/json
-$H = @{"X-Claim-Token" = $claim.claim_token}
-
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8040/control/plate/load `
-  -Headers $H -ContentType application/json `
-  -Body '{"plate_id":"bench","model":"agilent_shallow_96"}'
-
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8040/control/read/absorbance `
-  -Headers $H -ContentType application/json `
-  -Body '{"wells":["A1"],"wavelength_nm":600}'
-
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8040/control/release -Headers $H
-```
-
-## 7. Preconditions you will hit (and what they mean)
-
-These are refusals, not faults — the device is healthy and declining an
-inapplicable request. None of them writes `last_error` or turns the tile red.
-
-| Response | Meaning | Fix |
-|---|---|---|
-| `412 plate_not_loaded` | No plate assigned in the reader | `POST /control/plate/load` |
-| `412 camera_not_ready` | Camera did not initialise | Check PySpin; `shutdown` then `startup` |
-| `422` naming a filter cube | Fluorescence channel with no cube fitted | Buy a cube; not a software issue |
-| `422` naming a field | Out-of-range wavelength / focal height / a `gain` on a read | Fix the request |
-| `423` | Someone else holds the claim | Wait, or check `details.claimed_by` |
-
-`GET /status.allowed_actions` always tells you what is currently permitted, and
-never advertises something the endpoint would refuse.
-
-## 8. What to record
-
-Worth writing down, because it feeds decisions rather than just the log:
-
-1. **Whether absorbance completed**, and the numbers for a blank vs a sample.
-   This is the gate on the whole read path being declared verified.
-2. **The resolved autofocus focal height** for your plate + objective. Once
-   known, it becomes the sensible default to hard-code per plate type instead
-   of searching every capture.
-3. **Time to reach 37 °C**, and whether cooling does anything.
-4. **Whether phase contrast produced an image**, and how it compares to
-   brightfield on the same well for glare.
-5. **Any `AssertionError`** with the surrounding log lines — those are the
-   instrument rejecting a command, and the message now says so rather than
-   being empty.
-
-Update `README.md`'s capability table with whatever you learn, and
-[`ROADMAP.md`](https://github.com/cyrilcaoyang/ac-organic-lab) in the monorepo
-if the read path graduates to verified.
-
-## 9. Known-unverified list (as of 2026-08-12)
-
-| Path | State |
-|---|---|
-| `read.absorbance` / `read.fluorescence` / `read.luminescence` | never completed on hardware |
-| `imaging.capture` brightfield | ✅ verified through REST |
-| `imaging.capture` phase contrast | driver permits it; never imaged |
-| `autofocus` / `auto_exposure` | implemented; never run on a real subject |
-| `incubator.set_temperature` | verified to ramp; never confirmed to arrive |
-| Cooling below ambient | driver claims support; unconfirmed on this unit |
-| `shake.start` / `shake.stop` | verified empty; never with liquid |
-| Fluorescence imaging | blocked — 4 cube slots, all empty |
+Review the isolated branch and test report. Deployment requires a supervised
+stop, preserving config/state/camera dependencies, applying the reviewed code,
+and a restart followed by the bench checks above. Do not change the active
+checkout while the live editable installation uses it.

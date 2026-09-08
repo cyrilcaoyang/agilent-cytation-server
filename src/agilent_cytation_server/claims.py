@@ -52,6 +52,7 @@ class _ActiveClaim(BaseModel):
     owner: str
     session_id: str
     expires_at: datetime
+    ttl_s: float = 30.0
 
     def to_claimed_by(self) -> ClaimedBy:
         return ClaimedBy(
@@ -138,6 +139,7 @@ class ClaimManager:
                 owner=owner,
                 session_id=session_id,
                 expires_at=expires_at,
+                ttl_s=ttl_s,
             )
             heartbeat = max(1.0, ttl_s / self._HEARTBEAT_DIVISOR)
             return token, heartbeat, expires_at
@@ -156,7 +158,9 @@ class ClaimManager:
                 token, self._claim.token
             ):
                 raise ClaimRejectedError("Unknown or stale claim token")
-            ttl_s = max(1.0, min(600.0, float(extend_s or 30.0)))
+            ttl_s = max(
+                1.0, min(600.0, float(self._claim.ttl_s if extend_s is None else extend_s))
+            )
             new_expires = _now() + timedelta(seconds=ttl_s)
             self._claim = self._claim.model_copy(update={"expires_at": new_expires})
             return new_expires

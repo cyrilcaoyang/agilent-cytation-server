@@ -46,7 +46,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+import json
+import subprocess
+from datetime import datetime, timezone
+from functools import lru_cache
+from importlib.metadata import PackageNotFoundError, version
+from uuid import uuid4
 from pathlib import Path
 from typing import Any
 
@@ -163,6 +168,31 @@ def _patch_pylabrobot_ftdi_enumeration() -> None:
     logger.info("Patched pylabrobot.io.ftdi.FTDI._resolve_device_serial to skip unopenable devices")
 
 
+@lru_cache(maxsize=1)
+def _software_provenance() -> dict[str, Any]:
+    """Snapshot the executing checkout once; deployments restart after updates."""
+    result: dict[str, Any] = {"version": None, "git_revision": None, "git_dirty": None}
+    try:
+        result["version"] = version("agilent-cytation-server")
+    except PackageNotFoundError:
+        pass
+    root = Path(__file__).resolve().parents[2]
+    if not (root / ".git").exists():
+        return result
+    try:
+        result["git_revision"] = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=root, check=True,
+            capture_output=True, text=True, timeout=2,
+        ).stdout.strip()
+        result["git_dirty"] = bool(subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=root,
+            check=True, capture_output=True, text=True, timeout=2,
+        ).stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        logger.debug("Git provenance unavailable", exc_info=True)
+    return result
+
+
 class CytationReader:
     """Real PyLabRobot-backed Cytation 5 reader.
 
@@ -263,19 +293,11 @@ class CytationReader:
                 return (TEMPERATURE_MIN_C, TEMPERATURE_MAX_C)
 
         backend = _RangeCorrectedBackend(**backend_kwargs)
-        # Serialize every send_command so the shaker's 16-minute re-trigger
-        # cannot interleave with a temperature read. See link_lock.py.
-        from .link_lock import install as _install_link_lock
+        # Refusal detection runs inside the serial lock, so a refused D
+        # releases its transaction instead of stranding the link until expiry.
+        from .reply_check import install_checked_link, install_body_check as _install_body_check
 
-        _install_link_lock(backend)
-        # Outermost, so it sees the reply the caller would have received.
-        # PyLabRobot discards the instrument's status word almost everywhere,
-        # which is how a rejected focus command passed for working code for
-        # four months. See reply_check.py.
-        from .reply_check import install as _install_reply_check
-        from .reply_check import install_body_check as _install_body_check
-
-        _install_reply_check(backend)
+        install_checked_link(backend)
         # A read's data does not come back through send_command, so the body
         # needs its own hook. Without it a refused read surfaces as
         # `ValueError: subsection not found` from deep inside PyLabRobot.
@@ -1171,19 +1193,22 @@ class CytationReader:
 
         await backend.set_plate(plate)
         await backend.set_objective(obj)
-        await backend.set_imaging_mode(mode, led_intensity=led_intensity)
-        # `select` is 1-based here: Well.get_row()/get_column() are 0-based,
-        # and the +1 is what capture_a1.py verified against the hardware.
-        # (PLR's own Imager.capture passes 0-based values straight through,
-        # which is an upstream off-by-one we deliberately do not copy.)
-        await backend.select(row=well_obj.get_row() + 1, column=well_obj.get_column() + 1)
-        await backend.set_gain(gain)
-        # Centre of the selected well.
-        await backend.set_position(0.0, 0.0)
-
-        backend.start_acquisition()
+        acquisition_attempted = False
+        captured = False
         tuning: dict[str, Any] = {}
         try:
+            await backend.set_imaging_mode(mode, led_intensity=led_intensity)
+            # `select` is 1-based here: Well.get_row()/get_column() are 0-based,
+            # and the +1 is what capture_a1.py verified against the hardware.
+            # (PLR's own Imager.capture passes 0-based values straight through,
+            # which is an upstream off-by-one we deliberately do not copy.)
+            await backend.select(row=well_obj.get_row() + 1, column=well_obj.get_column() + 1)
+            await backend.set_gain(gain)
+            # Centre of the selected well.
+            await backend.set_position(0.0, 0.0)
+
+            acquisition_attempted = True
+            backend.start_acquisition()
             if auto_exposure:
                 exposure_ms = await self._auto_exposure(
                     focal_height_mm=focal_height_mm,
@@ -1200,14 +1225,24 @@ class CytationReader:
                     tuning=tuning,
                 )
             image = await self._acquire_at(focal_height_mm, exposure_ms)
+            captured = True
         finally:
-            backend.stop_acquisition()
+            cleanup_error: Exception | None = None
+            if acquisition_attempted:
+                try:
+                    backend.stop_acquisition()
+                except Exception as exc:
+                    cleanup_error = exc
+                    logger.warning("Cytation stop_acquisition failed after capture: %s", exc)
             try:
                 await backend.led_off()
-            except Exception as exc:  # pragma: no cover - hardware-specific
-                # Leaving an LED on is a real (if minor) hazard for live
-                # samples, so it is worth a warning rather than silence.
+            except Exception as exc:
+                cleanup_error = cleanup_error or exc
                 logger.warning("Cytation led_off failed after capture: %s", exc)
+            # Preserve a capture/cancellation error, but do not report success
+            # when cleanup failed after an otherwise successful acquisition.
+            if captured and cleanup_error is not None:
+                raise cleanup_error
 
         payload = self._save_capture(
             image,
@@ -1217,9 +1252,9 @@ class CytationReader:
             focal_height_mm=focal_height_mm,
             exposure_ms=exposure_ms,
             gain=gain,
+            led_intensity=led_intensity,
+            tuning=tuning,
         )
-        if tuning:
-            payload["tuning"] = tuning
         return payload
 
     async def _acquire_at(self, focal_height_mm: float, exposure_ms: float) -> Any:
@@ -1300,10 +1335,11 @@ class CytationReader:
         # The refusal itself is caught by reply_check; re-raise with the two
         # facts the generic handler cannot know — which height was asked for,
         # and which objective was in the path when it was refused.
-        from .reply_check import CommandRefused
+        from .reply_check import CommandRefused, require_status
 
         try:
-            await backend.send_command("i", param)
+            response = await backend.send_command("i", param)
+            require_status(response, command=f"focus move to {focal_height_mm} mm", expected="0000")
         except CommandRefused as exc:
             obj = getattr(getattr(backend, "_objective", None), "name", "unknown")
             raise RuntimeError(
@@ -1531,6 +1567,8 @@ class CytationReader:
         focal_height_mm: float,
         exposure_ms: float,
         gain: float,
+        led_intensity: int = 10,
+        tuning: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         try:
             from PIL import Image as PILImage  # type: ignore[import-not-found]
@@ -1540,16 +1578,18 @@ class CytationReader:
                 "Install with `uv sync --extra imaging`."
             ) from exc
 
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
+        capture_id = uuid4().hex
         out_dir = self._capture_dir(now)
         out_dir.mkdir(parents=True, exist_ok=True)
         stamp = now.strftime("%Y%m%dT%H%M%S")
         filename = (
             f"{well}_{channel.lower()}_{stamp}"
-            f"_f{focal_height_mm:.2f}_e{exposure_ms:.1f}.png"
+            f"_f{focal_height_mm:.2f}_e{exposure_ms:.1f}_{capture_id}.png"
         )
         path = out_dir / filename
-        PILImage.fromarray(image).save(path)
+        with path.open("xb") as stream:
+            PILImage.fromarray(image).save(stream, format="PNG")
 
         # Pixel stats travel with the result because focus and exposure are
         # tuned from them, and a caller that only gets a path has to reopen
@@ -1564,7 +1604,17 @@ class CytationReader:
         except Exception:  # pragma: no cover - non-array image
             pass
 
-        return {
+        metadata_path = path.with_suffix(".json")
+        payload = {
+            "capture_id": capture_id,
+            "captured_at": now.isoformat(),
+            "plate_id": self._plate_id,
+            "plate_model": self._plate_model,
+            "led_intensity": led_intensity,
+            "metadata_path": str(metadata_path),
+            "software": _software_provenance(),
+            "calibration_status": "unverified",
+            "tuning": tuning or {},
             "well": well,
             "channel": channel,
             "objective": objective,
@@ -1576,6 +1626,10 @@ class CytationReader:
             "height": int(image.shape[0]) if hasattr(image, "shape") else None,
             "pixel_stats": stats,
         }
+        # Retain the image if metadata fails, but fail the operation visibly.
+        with metadata_path.open("x", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True, allow_nan=False)
+        return payload
 
 
 class StubCytationReader:

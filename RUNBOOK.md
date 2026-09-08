@@ -1,3 +1,9 @@
+> **2026-09-08 operational note:** the deployed reader uses the FTDI vendor
+> driver with D2XX. The Zadig/libusbK swap sections below are historical.
+> Use [the current bench checklist](docs/IMPLEMENTATION.md) for capability
+> status and morning verification. Reliability changes prepared tonight are
+> separate from deployment.
+
 # Cytation 5 — Operational Runbook
 
 Day-to-day operations for the BioTek (Agilent) Cytation 5 service running on `sdl2-pc-03-cytation`.

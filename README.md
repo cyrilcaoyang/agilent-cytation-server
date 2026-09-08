@@ -1,3 +1,10 @@
+> **September 8 reassessment:** see [the current to-do list](docs/TODO_2026-09-08.md)
+> for the integrated reliability branch and supervised deployment/bench checks.
+
+> **Current bench status:** see [the capability matrix and supervised checklist](docs/IMPLEMENTATION.md).
+> Hardware evidence is through September 4; the September 8 reliability changes
+> require supervised deployment. Camera acquisition is not yet validated microscopy.
+
 # BioTek (Agilent) Cytation 5 — Python driver + REST API
 
 PyLabRobot-backed Python driver and REST API service for the **BioTek (Agilent) Cytation 5 Multi-Mode Reader**, communicating over USB. Driver layer is `pylabrobot.plate_reading.PlateReader` + `pylabrobot.plate_reading.agilent.biotek_cytation_backend.CytationBackend` (not the deprecated `Cytation5Backend` alias). The service exposes the unified lab equipment status spec so the AC Organic Self-Driving Lab dashboard can poll it like any other device.
@@ -442,3 +449,32 @@ After a registry change, restart the dashboard API per `docs/EQUIPMENT_INTEGRATI
 - **No warranty / misuse**: provided **"as is", without warranty of any kind**. You are solely responsible for safe operation of equipment and compliance with all applicable laws, regulations, and vendor licenses.
 
 MIT licensed — see `LICENSE`.
+
+## Plate persistence and capture provenance (prepared September 8)
+
+Reloading the same plate ID with `wells` omitted preserves its well map and,
+when `model` is omitted, its model. An explicit `wells` list replaces that map;
+a different plate ID starts empty. Disk-write failures return HTTP 503 and
+leave the durable and in-memory plate state unchanged. Invalid loads are
+validated before assigning the reader; assignment or persistence failures
+restore the prior reader resource, or disconnect if restoration fails.
+Physical plate presence is still not sensed.
+
+Real captures use UUID filenames and UTC timestamps. Each PNG has a JSON
+sidecar containing plate ID/model, objective, well, resolved focus/exposure,
+gain, LED intensity, tuning, pixel statistics, and available software/Git
+provenance. `metadata_path` and `capture_id` are included in response details.
+Calibration remains explicitly `unverified`. Metadata write failure fails the
+operation while retaining the image for recovery. Cleanup failures also fail
+the operation; an earlier capture error remains the primary exception.
+
+CI runs locked dependencies on Python 3.10/3.12 and Linux/Windows, including
+the imaging and PLR extras. D2XX unit tests use a fake handle and a minimal
+constants module, so they do not require the vendor DLL. CI is hardware-free;
+transport and measurement qualification still require the bench checklist.
+
+Command checks are installed inside the serial transaction lock so a refused
+setup command releases ownership. Focus updates its cached position only after
+an explicit `0000` acknowledgement; undocumented replies are still logged and
+passed through for commands without a known acceptance rule. Claim heartbeats
+renew the originally requested TTL, preserving the advertised interval.
