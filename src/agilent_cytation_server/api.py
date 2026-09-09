@@ -1,4 +1,4 @@
-"""FastAPI app exposing the Cytation 5 service over the lab status spec v1.1.
+"""FastAPI app exposing the Cytation 5 service over the lab status spec v1.2.
 
 Endpoints
 ---------
@@ -50,6 +50,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import config as _config
 from .claims import ClaimManager, ClaimRejectedError
+from .documentation import equipment_documentation
 from .errors import PreconditionNotMet, describe
 from .control_args import (
     AbsorbanceArgs,
@@ -138,7 +139,7 @@ def create_app(
         version="0.2.0",
         description=(
             "REST API for the BioTek / Agilent Cytation 5 plate reader. "
-            "Conforms to the AC lab equipment status spec v1.1 — see "
+            "Conforms to the AC lab equipment status spec v1.2 — see "
             "`docs/STATUS_SPEC.md` in the ac-organic-lab monorepo. "
             "Driver layer is PyLabRobot's `PlateReader` + `Cytation5Backend`."
         ),
@@ -169,6 +170,11 @@ def create_app(
     @app.get("/health", response_model=HealthResponse, tags=["spec"])
     async def health() -> HealthResponse:
         return HealthResponse()
+
+    @app.get("/docs/agent", tags=["documentation"])
+    async def agent_docs() -> dict[str, Any]:
+        """Versioned agent guide and action schemas; no claim or hardware I/O."""
+        return equipment_documentation(app.openapi())
 
     @app.get("/status", response_model=EquipmentStatus, tags=["spec"])
     async def status() -> EquipmentStatus:

@@ -138,6 +138,7 @@ Spec-mandated read endpoints (always available):
 | GET | `/health` | `{status: "healthy"}` |
 | GET | `/status` | full `EquipmentStatus` envelope (always 200 unless the process is broken) |
 | GET | `/openapi.json` | OpenAPI document (FastAPI auto-generates) |
+| GET | `/docs/agent` | Versioned agent guide, validation limits and generated action schemas; no hardware I/O |
 
 v1.1 claim protocol:
 
