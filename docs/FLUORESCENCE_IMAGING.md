@@ -66,16 +66,68 @@ million pixels, so a weak read means a hopeless image.
 emitter alone in a fresh clear-bottom plate. Cleaner spectra, no cross-talk
 from the methylene blue series, and no risk to the dilution work.
 
+## Step 1 result — measured 2026-09-09
+
+Done. Column 12's emissive solid, scanned through the working read path with a
+water blank subtracted on every point and Rhodamine 6G alongside as a control.
+
+**Unknown emitter: excitation max ~390 nm, emission max ~490 nm.**
+
+| scan | result |
+|---|---|
+| synchronous (em = ex + 60) | broad peak near ex 420, hard cutoff past 600 nm |
+| emission at fixed ex 420 | 450: 65,935 / 470: 109,773 / **490: 137,101** / 512: 120,192 / 530: 95,045 / 550: 64,515 / 570: 38,231 / 630: 2,994 |
+| excitation at fixed em 490 | 360: 78,718 / 375: 131,687 / **390: 159,866** / 405: 136,780 / 420: 147,010 / 435: 121,740 / 450: 100,604 |
+
+Two properties that drive the cube choice:
+
+* **Stokes shift is ~100 nm.** Standard cubes are built for the 20-60 nm shifts
+  of fluorescent proteins, and their dichroics are placed accordingly. This
+  emitter does not fit the common four well.
+* **Excitation is broad** — everything from 375 to 450 nm sits above 60 % of
+  peak — so the cube does not have to centre on 390.
+
+**Control validated the method.** Rhodamine 6G peaked at ex 500 / em 560 on the
+synchronous diagonal (1,189,443 counts, clean rise and fall either side), which
+is where a fluorophore with ex ~526 / em ~555 lands on that constraint.
+
+**Caveat on the Rhodamine wells:** they read 2.2-2.9 OD at 526 nm. Fluorescence
+wants OD < 0.1; above ~2 the inner-filter effect flattens and apparently
+red-shifts the excitation spectrum. The four-step dilution spanning only
+2.2 → 2.9 OD is stray-light compression, not real. Those wells are outside the
+linear range and should not be used quantitatively.
+
 ## Step 2 — choose the cubes from the measurement
 
 Match the cube to the measured maxima, not to a guess.
 
-| filter cube | part | LED cube needed |
-|---|---|---|
-| DAPI | `1225100` | (confirm — UV/blue) |
-| GFP | `1225101` | `1225001` (505 nm, GFP/CFP) |
-| RFP | `1225103` | `1225002` (623 nm, Red/Texas Red) |
-| CY5 | `1225105` | (confirm — far red) |
+Confirmed specifications, against the measured ex 390 / em 490:
+
+| cube | part | EX | EM | fit for this emitter |
+|---|---|---|---|---|
+| DAPI | `1225100` | 377/50 (352-402) | 447/60 (417-477) | **excitation dead-centre on 390**; emission catches the blue half only, missing the 490 peak |
+| GFP | `1225101` | 469/35 (452-487) | 525/39 (506-545) | excitation down at ~60 %; emission catches 506-545 where the emitter is still 70-88 % |
+| CFP | *confirm* | ~434 | ~477 | best balance on paper — ~85 % excitation, emission near the peak |
+| Texas Red | `1225102` | 586/15 | 647/57 (dichroic 605) | useless here — the emitter is dark past 630 |
+| RFP | `1225103` | — | — | too red |
+| CY5 | `1225105` | — | — | far too red |
+
+LED cubes confirmed: `1225001` = 465 nm (GFP/CFP), `1225002` = 590 nm
+(Texas Red), `1225004` = 505 nm. **A DAPI cube needs a violet/near-UV LED
+whose part number is not confirmed** — `1225001` at 465 nm is far too red for
+a 377/50 excitation filter.
+
+**Recommendation: do not pick from the common four. Send Agilent the measured
+spectrum and ask what they would match to ex 390 / em 490.** Their range is
+wider than the four above — parts such as `1225111`, `1225113`, `1225116`
+(GFP excitation with CY5 emission) and `1225118` exist, so unusual pairings are
+made. A ~100 nm Stokes shift is exactly the case where an off-the-shelf choice
+loses most of the signal.
+
+If a stock cube must be chosen without that conversation, **DAPI `1225100`**
+gives the best excitation match — its 352-402 window sits on the emitter's
+peak — at the cost of collecting only the blue side of the emission. Confirm
+its LED cube part number before ordering; the filter is useless without it.
 
 Note for Rhodamine 6G specifically: it emits at ~555 nm, while the RFP cube's
 emission window sits redder than that. An RFP cube catches the tail, not the
