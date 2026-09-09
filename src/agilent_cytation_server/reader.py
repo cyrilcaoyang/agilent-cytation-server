@@ -462,7 +462,7 @@ class CytationReader:
         return self._enum_names("filters")
 
     def optics_inventory(self) -> dict[str, Any]:
-        """What is fitted, and whether we actually managed to ask.
+        """What is fitted, whether we managed to ask, and what "objectives" means.
 
         An empty list and a failed query are *not* the same claim — the first
         says "no filter cubes are installed", the second says "we don't
@@ -473,6 +473,25 @@ class CytationReader:
         ``*_slots`` is the number of physical positions the instrument
         reported (``None`` when the query never succeeded), so a reader can
         see 4 empty turret positions as distinct from silence.
+
+        **The objective list is an inference, not an observation, and this
+        unit proves it.** On firmware 2.x PyLabRobot builds it by reading
+        *condenser phase-annulus* part numbers (``i h2``..``i h7``) and mapping
+        them to objective names — ``1320520`` to 4X, ``1320521`` to 20X,
+        ``1322026`` to 40X. Those are illumination-side inserts. Nothing in
+        that query touches the objective turret.
+
+        On 2026-09-08 an operator opened this instrument while it reported
+        three fitted objectives. The turret held one unmarked wide-field lens,
+        one ``4X``-marked blanking plug, and empty positions; the annulus the
+        driver had been reading was in the operator's hand. Every optical
+        anomaly recorded since August followed from believing this list.
+
+        So ``objectives_source`` names the query the list came from and
+        ``objectives_verified`` stays ``False`` until someone confirms the
+        turret by eye. A caller deciding whether microscopy is possible must
+        branch on the latter, never on a non-empty ``objectives``.
+        See ``docs/BENCH_2026-09-08.md``.
         """
 
         return {
@@ -480,6 +499,8 @@ class CytationReader:
             "filters": self._enum_names("filters"),
             "objective_slots": self._slot_count("objectives"),
             "filter_slots": self._slot_count("filters"),
+            "objectives_source": "condenser_annulus_part_numbers",
+            "objectives_verified": False,
         }
 
     def _raw_optics(self, attr: str) -> list[Any] | None:
@@ -1499,8 +1520,18 @@ class CytationReader:
                     f"Unknown objective {requested!r}. Installed: {installed}"
                 )
             if installed and obj.name not in installed:
-                raise ValueError(
-                    f"Objective {obj.name} is not installed. Installed: {installed}"
+                # Warn, do not refuse. This list describes the *condenser
+                # annuli*, not the objective turret (see optics_inventory), so
+                # refusing on it enforces an inventory that has been shown not
+                # to describe the hardware. A wrong objective request fails at
+                # the instrument with a status word we now surface; a correct
+                # one must not be blocked by an inference.
+                logger.warning(
+                    "Objective %s is not in the annulus-derived list %s. "
+                    "That list does not describe the objective turret, so the "
+                    "request proceeds; confirm the turret if the image is wrong.",
+                    obj.name,
+                    installed,
                 )
             return obj
 
@@ -1695,11 +1726,15 @@ class StubCytationReader:
         return ["DAPI", "GFP", "RFP"]
 
     def optics_inventory(self) -> dict[str, Any]:
+        # Same keys as the real reader, so dry-run exercises the shape a
+        # caller will actually branch on.
         return {
             "objectives": self.installed_objectives(),
             "filters": self.installed_filters(),
             "objective_slots": 6,
             "filter_slots": 4,
+            "objectives_source": "stub",
+            "objectives_verified": False,
         }
 
     def firmware_version(self) -> str | None:

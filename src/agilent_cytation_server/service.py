@@ -1134,6 +1134,14 @@ class CytationService:
                             "installed_filters": optics["filters"],
                             "objective_slots": optics["objective_slots"],
                             "filter_slots": optics["filter_slots"],
+                            # `installed_objectives` is derived from condenser
+                            # annuli, not the objective turret — these two say
+                            # so on the wire so a caller need not know the
+                            # driver's internals to distrust it.
+                            "objectives_source": optics.get("objectives_source"),
+                            "objectives_verified": optics.get(
+                                "objectives_verified", False
+                            ),
                         }
                     )
                 except Exception:  # pragma: no cover - defensive
