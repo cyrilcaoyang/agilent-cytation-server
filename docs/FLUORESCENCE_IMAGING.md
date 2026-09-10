@@ -24,10 +24,21 @@ A fluorescence channel needs **all three**: an objective to form the image, an
 LED cube to excite, and a filter cube to separate excitation from emission.
 Missing any one of them produces nothing.
 
-> **Check the LED cubes before ordering anything.** They live in their own
-> turret and PyLabRobot never queries it, so `/status` cannot tell you what is
-> there. A filter cube bought without its matching LED cube is inert. This has
-> to be a physical look, the same way the objective turret was.
+> **Check the LED cubes before ordering anything.** Every `i` subcommand the
+> driver issues has been audited: `q` (filters), `o`/`h` (objectives and
+> annuli), `L` (LED **on/off only**), `F` (focus). There is **no LED inventory
+> command at all**, so no amount of software work can report them — this is a
+> physical look, the same way the objective turret was.
+>
+> The filter cubes, by contrast, *are* genuinely queried, and the raw replies
+> confirm all four positions empty:
+> `i q1`..`q4` each answered a blank field plus `0000`. Unlike
+> `installed_objectives`, `installed_filters: []` describes the right turret.
+>
+> Note also from the manual: each position is **one LED cube with a filter cube
+> screwed on top**, four positions total. So a channel needs its own LED cube —
+> one 365 nm LED does not serve all four — and with no filter cubes fitted, any
+> LED cube present will be sitting exposed in the slide.
 
 ## Step 1 — measure the emitter before buying a cube
 
@@ -117,12 +128,37 @@ LED cubes confirmed: `1225001` = 465 nm (GFP/CFP), `1225002` = 590 nm
 whose part number is not confirmed** — `1225001` at 465 nm is far too red for
 a 377/50 excitation filter.
 
-**Recommendation: do not pick from the common four. Send Agilent the measured
-spectrum and ask what they would match to ex 390 / em 490.** Their range is
-wider than the four above — parts such as `1225111`, `1225113`, `1225116`
-(GFP excitation with CY5 emission) and `1225118` exist, so unusual pairings are
-made. A ~100 nm Stokes shift is exactly the case where an off-the-shelf choice
-loses most of the signal.
+### The full cube range — read the driver, not the catalogue
+
+**Corrected 2026-09-10.** An earlier revision of this file said nothing pairs
+UV excitation with red emission. That was wrong, and it was wrong because it
+was researched from Agilent's public product pages, which list roughly half
+the range. PyLabRobot's own `_load_filters` map is the better source:
+
+| part | mode | note |
+|---|---|---|
+| `1225121` | **C377_647** | **377 nm excitation, 647 nm emission** — UV in, deep red out |
+| `1225123` | **C400_647** | 400 nm excitation, 647 nm emission |
+| `1225116` | GFP_CY5 | 469 -> 647 |
+| `1225117` | RFP_CY5 | red -> far red |
+| `1225115` | TAG_BFP | ~402 -> ~457 |
+| `1225122` | OXIDIZED_ROGFP2 | ratiometric |
+| `1225109` | ACRIDINE_ORANGE | ~500, dual emission |
+| `1225107`, `1225110`, `1225119` | CFP, CFP-YFP FRET, FRET V2 | |
+| `1225100`-`1225106`, `1225111`-`1225114`, `1225118` | the common set | DAPI, GFP, Texas Red, RFP, CY5, YFP, CY7, PI, PE, Chlorophyll A, CY5.5, CFP FRET V2 |
+
+The naming convention matters: **`C<excitation>_<emission>`** is an explicit
+family of cross-band cubes. `1225121` (C377_647) shares DAPI's 377/50
+excitation filter, so it takes the same 365 nm LED (`1225007`).
+
+**So ask Agilent by that convention** — "do you make a `C377_525` or
+`C377_593`?" — rather than describing the requirement. If the C-family extends
+to green and yellow emission, that answers the whole question; nothing in
+either the driver map or the catalogue currently shows one.
+
+**Recommendation: do not pick from the common four on the strength of a guess.
+Send Agilent the measured spectrum.** A ~100 nm Stokes shift is exactly the
+case where an off-the-shelf choice loses most of the signal.
 
 If a stock cube must be chosen without that conversation, **DAPI `1225100`**
 gives the best excitation match — its 352-402 window sits on the emitter's
