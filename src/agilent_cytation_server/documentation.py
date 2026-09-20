@@ -1,10 +1,72 @@
-"""Versioned, hardware-independent guidance for agent clients."""
+"""Agent documentation: the versioned JSON guide plus the Markdown surface.
 
+Two things live here.
+
+:func:`equipment_documentation` builds the versioned JSON guide served at
+``GET /docs/agent`` — capability validation status, agent boundaries, and the
+``/control/*`` action schemas taken from the app's own OpenAPI document.
+
+:data:`router` serves the lab's standard Markdown documentation surface, the
+same shape as the other device services (torry-pines-shaker-server,
+sense-every-zone, mt-xpr-balance-server): a Markdown agent guide, a Markdown
+API reference, and a plain-text ``/llms.txt`` index, so an agent — or the
+dashboard's API reference page — can discover how to drive this instrument
+without reading the repo.
+"""
+
+from importlib.resources import files
 from typing import Any
+
+from fastapi import APIRouter
+from fastapi.responses import PlainTextResponse
 
 from .models import PROTOCOL_VERSION
 
 DOCUMENTATION_VERSION = "1.0.0"
+
+router = APIRouter(tags=["documentation"])
+
+
+class MarkdownResponse(PlainTextResponse):
+    media_type = "text/markdown"
+
+
+def _document(name: str) -> str:
+    return files("agilent_cytation_server").joinpath("docs", name).read_text(encoding="utf-8")
+
+
+@router.get("/agent-docs", response_class=MarkdownResponse, summary="Agent guide (Markdown)")
+async def agent_guide() -> str:
+    return _document("AGENT_GUIDE.md")
+
+
+@router.get(
+    "/agent-docs/api-reference",
+    response_class=MarkdownResponse,
+    summary="API reference (Markdown)",
+)
+async def api_reference() -> str:
+    return _document("API_REFERENCE.md")
+
+
+@router.get("/llms.txt", response_class=PlainTextResponse, summary="Discovery index for agents")
+async def llms_txt() -> str:
+    # Links are relative on purpose: the service is mounted behind a prefix on
+    # the dashboard's documentation proxy, and an absolute "/agent-docs" would
+    # resolve off the mount.
+    return (
+        "# BioTek (Agilent) Cytation 5 plate reader (STATUS_SPEC v1.2 device service)\n\n"
+        "## Documentation\n\n"
+        "- [Agent guide](agent-docs): health vs activity, claims, startup/shutdown "
+        "semantics, preconditions, refusal codes.\n"
+        "- [API reference](agent-docs/api-reference): every route with bodies and "
+        "refusal codes.\n"
+        "- [OpenAPI](openapi.json): request/response schemas.\n\n"
+        "## Live status\n\n"
+        "Read the service's `GET /status` through the lab-skills SDK or dashboard; "
+        "live status is not a documentation-proxy resource. Read allowed_actions "
+        "before acting.\n"
+    )
 
 
 def equipment_documentation(openapi: dict[str, Any]) -> dict[str, Any]:

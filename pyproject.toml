@@ -101,6 +101,11 @@ Repository = "https://github.com/cyrilcaoyang/agilent-cytation-server"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# The Markdown agent documentation is served from the installed package via
+# importlib.resources, so it has to ship in the wheel.
+agilent_cytation_server = ["docs/*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Async tests (tests/test_link_lock.py) need no per-test marker.
