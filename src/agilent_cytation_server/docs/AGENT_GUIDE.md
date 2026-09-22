@@ -224,6 +224,37 @@ Never read `null` as zero. On a serial dilution the saturated wells are the
 most concentrated points, so a caller that treats them as missing quietly fits
 its curve to the tail and reports a confident wrong slope.
 
+## Reads: what cannot be measured
+
+Three limits that are refusals, not clamps — the device will not quietly give
+you a nearby value instead. Full detail and the measurements behind them are in
+`/agent-docs/api-reference`.
+
+**There is no spectrum or scan verb.** `read.absorbance` takes ONE
+`wavelength_nm`; `read.fluorescence` takes ONE `excitation_nm` and ONE
+`emission_nm`. Both bodies reject unknown fields, so asking for a range is a
+**422**, not a sweep. A spectrum is one call per wavelength — and since a claim
+`ttl_s` caps at 600 s while a 46-point sweep runs ~11 minutes, a sweep **must**
+heartbeat between reads.
+
+**Emission stops at 700 nm.** Excitation and emission are both bounded
+250-700 nm. Emission above 700 nm is not measurable on this path at any
+setting. Emission must also sit ~20-30 nm redder than excitation, or the
+monochromator passes scattered excitation light and the read measures the lamp.
+
+**Luminescence cannot read the H12 corner.** Any region whose maximum corner is
+exactly H12 fails with 503 — including the whole plate, so there is no
+full-plate luminescence read. `H11`, `G12`, `A1..H11` and `A1..G12` all read
+fine. Read around the corner (`A1..H11` plus `A1..G12` covers 95 of 96 wells),
+or take H12 by absorbance or fluorescence, which both return it normally.
+
+Absorbance (350-800 nm) and fluorescence (400-700 nm at 360 nm excitation) are
+bench-verified on a 19 mm plate as of 2026-09-22. Luminescence is not verified
+on this instrument at all.
+
+On a 19 mm plate keep `focal_height_mm` at the 7.0 default: below ~5.7 mm the
+read is refused with `5B00`.
+
 ## Shaking
 
 `shake.start` takes `{pattern, displacement_mm}`. `displacement_mm` is the

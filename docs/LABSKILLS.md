@@ -30,11 +30,25 @@ The patch has four parts:
 4. A registration test.
 
 **Sequencing.** Applied 2026-08-19. `do_not_call_connect` was already
-gone from `equipment.yaml` (`protocol: "1.2"`). Hardware verification
-per [`IMPLEMENTATION.md`](IMPLEMENTATION.md) is still open for the
-`read.*` path; the catalog no longer blocks SDK calls from being
-issued. Imaging, incubator and shaker are verified; treat the three
-`read.*` verbs as live-but-unverified on a real plate.
+gone from `equipment.yaml` (`protocol: "1.2"`).
+
+**Read verification, updated 2026-09-22.** `read.absorbance` and
+`read.fluorescence` are now bench-verified on a real plate: 46 absorbance
+points (350-800 nm) and 31 emission points (400-700 nm at 360 nm excitation)
+across nine wells of a 19 mm square-well plate, 693 values, no refusals. See
+[`BENCH_2026-09-22.md`](BENCH_2026-09-22.md).
+
+`read.luminescence` remains **unverified** — no luminescence read has been
+taken on this instrument.
+
+Two limits the catalog cannot express, both of which a caller will otherwise
+hit as a 422:
+
+- **No scan verb.** One wavelength per absorbance call, one ex/em pair per
+  fluorescence call. A sweep is one call per point, and it needs claim
+  heartbeats because `ttl_s` caps at 600 s while a 46-point sweep runs ~11 min.
+- **Emission stops at 700 nm.** Both ex and em are bounded 250-700; emission
+  above 700 nm cannot be measured on this path at all.
 
 ---
 

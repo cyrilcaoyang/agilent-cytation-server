@@ -29,7 +29,7 @@ def test_agent_docs_without_startup_or_hardware(monkeypatch, plate_state):
     response = client.get("/docs/agent")
     assert response.status_code == 200
     guide = response.json()
-    assert guide["documentation_version"] == "1.0.0"
+    assert guide["documentation_version"] == "1.1.0"
     assert guide["protocol_version"] == "1.2"
     schema = client.get("/openapi.json").json()
     assert guide["action_schemas"]["paths"] == {

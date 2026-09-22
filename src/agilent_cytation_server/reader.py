@@ -1017,10 +1017,10 @@ class CytationReader:
     # of the checksummed body, so it is an input here — the same wells at the
     # same focal height can be safe at 1.0 s and refused at 2.0 s.
     #
-    # Guarded on the same evidence as fluorescence, not on its own measurement:
-    # no luminescence read has been taken on this instrument. The guard is
-    # conservative - a safe checksum returns the wells untouched - so the worst
-    # case is a few discarded wells, not a wrong number.
+    # NOT used to guard reads. Kept only so the band hypothesis stays testable
+    # against future observations - `docs/BENCH_2026-08-31.md` §4 measured the
+    # band predicting the OPPOSITE of the failures here, which is what ruled
+    # padding out for this path.
     _LUM_FIXED_A = "000120010000110010000012300"
     _LUM_FIXED_B = "200200-001000-003000000000000000000013510"
 
@@ -1224,18 +1224,20 @@ class CytationReader:
         integration_time_s: float = 1.0,
     ) -> dict[str, float]:
         well_objs = self._wells_for(wells)
-        # Padded read — see _luminescence_checksum.
-        read_objs = self._pad_for_checksum(
-            well_objs,
-            (integration_time_s,),
-            checksum=self._luminescence_checksum,
-            what="luminescence",
-        )
+        # NOT padded, deliberately. Luminescence refusals do not follow the
+        # rejected-checksum band: measured 2026-08-31, H11 and G12 both compute
+        # 99 (inside the band) and READ FINE, while H12 computes 01 (outside it)
+        # and fails. The observed rule is that the region's maximum corner is
+        # exactly H12 — a different mechanism, and one padding cannot fix.
+        #
+        # Padding here would be actively harmful: `_grow_region` extends toward
+        # the plate edges, so it could grow a working region INTO H12 and turn a
+        # passing read into a 503. See docs/BENCH_2026-08-31.md §4.
         result = await self._call_frontend(
             "read_luminescence",
             focal_height=focal_height_mm,
             integration_time=integration_time_s,
-            wells=read_objs,
+            wells=well_objs,
             use_new_return_type=True,
         )
         return self._grid_to_wells(result[0]["data"], well_objs, wells)

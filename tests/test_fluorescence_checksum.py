@@ -106,13 +106,55 @@ def test_every_rejected_emission_point_can_be_rescued(reader) -> None:
 
 
 def test_luminescence_checksum_depends_on_integration_time() -> None:
-    """Same wells, same optics, different integration time -> different verdict.
+    """The integration time is inside the checksummed body, so it moves the value.
 
-    Not measured on hardware - no luminescence read has been taken on this
-    instrument. Derived from `biotek_backend.read_luminescence`, and guarded on
-    the strength of the fluorescence result rather than its own evidence.
+    Derived from `biotek_backend.read_luminescence`. This function exists to keep
+    the band hypothesis testable; it does NOT guard reads - see below.
     """
     a = CytationReader._luminescence_checksum(0, 0, 2, 2, 1.0)
     b = CytationReader._luminescence_checksum(0, 0, 2, 2, 2.0)
     assert a != b
     assert 0 <= a < 100 and 0 <= b < 100
+
+
+def test_the_band_does_not_explain_luminescence_refusals() -> None:
+    """Why luminescence is deliberately NOT padded.
+
+    Measured 2026-08-31 (docs/BENCH_2026-08-31.md §4): single-well regions H11
+    and G12 both compute a checksum inside the rejected band and READ FINE,
+    while H12 computes one outside it and fails. The band predicts the opposite
+    of the observed behaviour, so padding is the wrong tool for this path - and
+    would be harmful, since growing a region can reach the H12 corner that
+    actually fails.
+    """
+    h11 = CytationReader._luminescence_checksum(7, 10, 7, 10, 1.0)
+    g12 = CytationReader._luminescence_checksum(6, 11, 6, 11, 1.0)
+    h12 = CytationReader._luminescence_checksum(7, 11, 7, 11, 1.0)
+
+    # The two that WORKED sit inside the band; the one that FAILED sits outside.
+    assert h11 in CytationReader._UNSAFE_CHECKSUMS
+    assert g12 in CytationReader._UNSAFE_CHECKSUMS
+    assert h12 not in CytationReader._UNSAFE_CHECKSUMS
+
+
+@pytest.mark.asyncio
+async def test_luminescence_is_not_padded(reader) -> None:
+    """A luminescence read must reach the driver with exactly the wells asked for.
+
+    Padding could grow the region into H12 and break a working read.
+    """
+    sent: dict = {}
+
+    async def fake_frontend(name, **kw):
+        sent.update(kw)
+        return [{"data": [[0.0] * 12 for _ in range(8)]}]
+
+    reader._require_connected = lambda: None
+    reader._require_plate = lambda: None
+    reader._check_wells = lambda w: None
+    reader._call_frontend = fake_frontend
+    reader._wells_for = lambda names: [FakeWell(7, 10)]      # H11
+    reader._grid_to_wells = lambda grid, objs, names: {"H11": 0.0}
+
+    await CytationReader.read_luminescence(reader, wells=["H11"])
+    assert len(sent["wells"]) == 1, "luminescence must not be padded"

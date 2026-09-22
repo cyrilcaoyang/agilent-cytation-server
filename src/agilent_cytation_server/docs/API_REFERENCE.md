@@ -113,6 +113,88 @@ value always means over-range and is named in `over_range`.
 
 Responses: **200**; **412** `{detail, precondition: "plate_not_loaded" | "drawer_open", ...}`; **422** a well not on the plate or a bound violated; **503** on an instrument failure, recording `last_error.code: "read.absorbance" | "read.fluorescence" | "read.luminescence"`.
 
+### Taking a wavelength sweep
+
+Verified end to end 2026-09-22 on serial 23030927: 46 absorbance points
+(350-800 nm) plus 31 emission points (400-700 nm at 360 nm excitation) over
+wells A1-C3, 693 values, no refusals.
+
+**There is no spectrum verb.** `read.absorbance` takes one `wavelength_nm`;
+`read.fluorescence` takes one `excitation_nm` and one `emission_nm`. Both bodies
+reject unknown fields, so a `wavelength_start_nm` / `step_nm` request is refused
+with **422** rather than partially honoured. Gen5 cannot define a scan either —
+`ReadType = Spectrum` is rejected by its own parser, `EndPoint` being the only
+accepted value. A sweep is therefore **one call per wavelength**, and a 43-point
+"spectrum" is 43 requests.
+
+A sweep outlives a claim. `ttl_s` is clamped to **1-600 s**, and a 46-point
+absorbance sweep takes ~11 min, so you **must** heartbeat:
+
+```
+POST /control/claim   {"owner": "...", "session_id": "...", "ttl_s": 600}
+   -> {"claim_token": "...", "heartbeat_interval_s": 200.0, "expires_at": "..."}
+
+for each wavelength:
+    POST /control/heartbeat            X-Claim-Token: <token>     # 204
+    POST /control/read/absorbance      X-Claim-Token: <token>
+         {"wells": ["A1","A2",...], "wavelength_nm": 350}
+
+POST /control/release                  X-Claim-Token: <token>     # also on failure
+```
+
+Measured per-read cost: **~14 s** absorbance, **~20 s** fluorescence, rising to
+**~35 s** when the read region is padded (below). Persist results as they
+arrive — a sweep that dies at point 40 of 46 should not lose the first 39.
+
+**Read the response correctly.** A `null` in `wells` *always* means over-range
+and the well is named in `over_range`; it never means "not measured". On a
+dilution series the saturated wells are the most concentrated points, so code
+that treats `null` as missing quietly fits its curve to the tail and reports a
+confident wrong slope.
+
+**Padding.** The instrument refuses any read command whose checksum falls in a
+rejected band, answering the start-read with status `2D06`. The driver steps
+around it by growing the read region until the checksum is acceptable — which is
+why a padded read is slower, and why more wells than you asked for may be
+measured. The response still contains only the wells you requested. A **503**
+naming `2D06` means that guard was bypassed or has regressed: report it rather
+than retrying.
+
+Bounds that bite, all of them hard refusals rather than clamps:
+
+| | limit | note |
+|---|---|---|
+| absorbance | 230-999 nm | |
+| excitation | 250-700 nm | |
+| **emission** | **250-700 nm** | 700 nm is a **hardware ceiling**, not a driver choice: the Cytation 5 spec sheet gives emission as 300-700 nm (`docs/INDEX.md`). Emission above 700 nm is not measurable on this instrument by any route, Gen5 included. |
+| em vs ex | em ~20-30 nm redder | closer and the monochromator passes scattered excitation light — you measure the lamp |
+| focal height | 4.5-13.88 mm | on a 19 mm plate anything below ~5.7 mm is refused with `5B00`; leave the 7.0 default |
+
+Two state rules: reads are refused **412** while the drawer is open (close it
+first — idempotent), and withheld entirely while the shaker runs, because the
+read and the shake task share the serial link.
+
+#### Wells that cannot be measured — the luminescence H12 corner
+
+**`read.luminescence` fails with 503 for any region whose maximum corner is
+exactly H12**, the whole plate included. Measured 2026-08-31:
+
+| region | result |
+|---|---|
+| `H11`, `G12`, `A1..H11`, `A1..G12` | read fine |
+| `H12`, `H12+H11`, `G11..H12`, `A1..H12` | **503** |
+
+So a full-plate luminescence read is not available. Work around it by reading
+around the corner — `A1..H11` plus `A1..G12` covers 95 of 96 wells — or read
+H12 by absorbance or fluorescence, both of which return it normally.
+
+This is **not** the rejected-checksum band and the padding described above does
+not fix it: on this path the band predicts the *opposite* of what happens
+(`H11` and `G12` compute checksums inside the band and succeed; `H12` computes
+one outside it and fails). Luminescence is therefore deliberately left
+unpadded — padding could grow a working region into the H12 corner and break
+it. Absorbance and fluorescence read H12 without trouble.
+
 ### Incubator
 
 | route | body | responses |
