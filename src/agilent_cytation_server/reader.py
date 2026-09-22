@@ -979,7 +979,72 @@ class CytationReader:
         )
         return sum(base.encode()) % 100
 
-    def _pad_for_checksum(self, well_objs: list[Any], wavelength: int) -> list[Any]:
+    # The fluorescence frame is NOT the absorbance frame with different numbers
+    # in it, and the difference is why this needed its own function rather than
+    # a parameter on the one above:
+    #
+    #   * opcode `008401`, not `004701`
+    #   * a different fixed block, and TWO wavelengths rather than one
+    #   * the checksum carries a `+7` offset that absorbance does not have.
+    #     PyLabRobot's own comment on it reads "don't know why +7". Neither do
+    #     we; it is copied because it is what the instrument accepts.
+    #
+    # Mirrors `biotek_backend.read_fluorescence` (pylabrobot 0.2.1). It must be
+    # kept in step with that method: a silent change upstream turns into reads
+    # the instrument refuses.
+    _FLUO_FIXED_A = "0001200100001100100000135000100200200"
+    _FLUO_FIXED_B = "000000000000000000210011"
+
+    @classmethod
+    def _fluorescence_checksum(
+        cls,
+        min_row: int,
+        min_col: int,
+        max_row: int,
+        max_col: int,
+        excitation_nm: int,
+        emission_nm: int,
+    ) -> int:
+        base = (
+            f"008401{min_row + 1:02}{min_col + 1:02}{max_row + 1:02}{max_col + 1:02}"
+            f"{cls._FLUO_FIXED_A}{excitation_nm:04d}000{emission_nm:04d}{cls._FLUO_FIXED_B}"
+        )
+        return (sum(base.encode()) + 7) % 100
+
+    # Luminescence is a THIRD frame: the fluorescence opcode, a different fixed
+    # block carrying the integration time, and a `+8` offset where fluorescence
+    # has `+7` (PyLabRobot: "don't know why +8"). The integration time is part
+    # of the checksummed body, so it is an input here — the same wells at the
+    # same focal height can be safe at 1.0 s and refused at 2.0 s.
+    #
+    # Guarded on the same evidence as fluorescence, not on its own measurement:
+    # no luminescence read has been taken on this instrument. The guard is
+    # conservative - a safe checksum returns the wells untouched - so the worst
+    # case is a few discarded wells, not a wrong number.
+    _LUM_FIXED_A = "000120010000110010000012300"
+    _LUM_FIXED_B = "200200-001000-003000000000000000000013510"
+
+    @classmethod
+    def _luminescence_checksum(
+        cls,
+        min_row: int,
+        min_col: int,
+        max_row: int,
+        max_col: int,
+        integration_time_s: float,
+    ) -> int:
+        seconds = int(integration_time_s)
+        millis = integration_time_s - seconds
+        base = (
+            f"008401{min_row + 1:02}{min_col + 1:02}{max_row + 1:02}{max_col + 1:02}"
+            f"{cls._LUM_FIXED_A}{seconds * 5:02d}{int(float(millis * 50)):02d}"
+            f"{cls._LUM_FIXED_B}"
+        )
+        return (sum(base.encode()) + 8) % 100
+
+    def _pad_for_checksum(
+        self, well_objs: list[Any], wavelength: int, *, checksum=None, what: str = "absorbance"
+    ) -> list[Any]:
         """Grow any region whose command checksum the instrument would reject.
 
         The checksum is a function of the region indices and the wavelength.
@@ -990,6 +1055,12 @@ class CytationReader:
         Returns the original list unchanged when nothing needs padding, which is
         the overwhelmingly common case (6 values out of 100).
         """
+        checksum = checksum or self._absorbance_checksum
+        # Absorbance passes one wavelength, fluorescence two, luminescence an
+        # integration time. A bare scalar is accepted so the original
+        # single-wavelength call sites keep working unchanged.
+        if not isinstance(wavelength, tuple):
+            wavelength = (wavelength,)
         plate = self._plate_resource()
         if plate is None or self._backend is None:
             return well_objs
@@ -1004,7 +1075,7 @@ class CytationReader:
         wanted: set[tuple[int, int]] = {(w.get_row(), w.get_column()) for w in well_objs}
         padded = False
         for min_row, min_col, max_row, max_col in rects:
-            if self._absorbance_checksum(min_row, min_col, max_row, max_col, wavelength) \
+            if checksum(min_row, min_col, max_row, max_col, *wavelength) \
                     not in self._UNSAFE_CHECKSUMS:
                 wanted.update(
                     (r, c)
@@ -1013,7 +1084,7 @@ class CytationReader:
                 )
                 continue
             grown = self._grow_region(
-                (min_row, min_col, max_row, max_col), wavelength, plate
+                (min_row, min_col, max_row, max_col), wavelength, plate, checksum
             )
             if grown is None:
                 logger.warning(
@@ -1025,9 +1096,10 @@ class CytationReader:
             else:
                 padded = True
                 logger.info(
-                    "Padded absorbance region (%d,%d)-(%d,%d) to (%d,%d)-(%d,%d) "
-                    "to avoid rejected checksum at %d nm",
-                    min_row, min_col, max_row, max_col, *grown, wavelength,
+                    "Padded %s region (%d,%d)-(%d,%d) to (%d,%d)-(%d,%d) "
+                    "to avoid rejected checksum at %s nm",
+                    what, min_row, min_col, max_row, max_col, *grown,
+                    "/".join(str(w) for w in wavelength),
                 )
             g_min_row, g_min_col, g_max_row, g_max_col = grown
             wanted.update(
@@ -1042,7 +1114,8 @@ class CytationReader:
         return [plate.get_item(f"{rows[r]}{c + 1}") for r, c in sorted(wanted)]
 
     def _grow_region(
-        self, rect: tuple[int, int, int, int], wavelength: int, plate: Any
+        self, rect: tuple[int, int, int, int], wavelength: tuple[int, ...],
+        plate: Any, checksum=None,
     ) -> tuple[int, int, int, int] | None:
         """Smallest expansion of ``rect`` whose checksum the instrument accepts.
 
@@ -1051,6 +1124,9 @@ class CytationReader:
         not enough — A1 at 400 nm has no safe single-edge expansion, but does
         have a safe two-edge one.
         """
+        checksum = checksum or self._absorbance_checksum
+        if not isinstance(wavelength, tuple):
+            wavelength = (wavelength,)
         min_row, min_col, max_row, max_col = rect
         n_rows, n_cols = plate.num_items_y, plate.num_items_x
         span = 4
@@ -1072,7 +1148,7 @@ class CytationReader:
                         extra = rows * cols - (max_row - min_row + 1) * (max_col - min_col + 1)
                         candidates.append((extra, cand))
         for _, cand in sorted(candidates):
-            if self._absorbance_checksum(*cand, wavelength) not in self._UNSAFE_CHECKSUMS:
+            if checksum(*cand, *wavelength) not in self._UNSAFE_CHECKSUMS:
                 return cand
         return None
 
@@ -1094,7 +1170,7 @@ class CytationReader:
         # plate-shaped, so reading extra wells costs a little time and changes
         # nothing about the values; _grid_to_wells still selects by the
         # originally requested wells.
-        read_objs = self._pad_for_checksum(well_objs, wavelength)
+        read_objs = self._pad_for_checksum(well_objs, (wavelength,))
         result = await self._call_frontend(
             "read_absorbance",
             wavelength=wavelength,
@@ -1112,12 +1188,30 @@ class CytationReader:
         focal_height_mm: float = 7.0,
     ) -> dict[str, float]:
         well_objs = self._wells_for(wells)
+        excitation = int(round(excitation_nm))
+        emission = int(round(emission_nm))
+        # Padded read — same rejected-checksum defect as absorbance, and it bites
+        # harder here. Measured 2026-09-22 on serial 23030927: a 360/400 nm read
+        # of A1:C3 computes checksum 95 and the instrument refuses the "O" with
+        # 2D06. Sweeping emission 400-700 nm in 10 nm steps over that region,
+        # 13 of the 31 points land in the rejected band — the read is not a rare
+        # unlucky case here, it is nearly half the scan.
+        #
+        # Until this call existed, `_pad_for_checksum` was wired into
+        # read_absorbance ONLY, so absorbance had been protected since 2026-08-23
+        # while fluorescence and luminescence went out unguarded.
+        read_objs = self._pad_for_checksum(
+            well_objs,
+            (excitation, emission),
+            checksum=self._fluorescence_checksum,
+            what="fluorescence",
+        )
         result = await self._call_frontend(
             "read_fluorescence",
-            excitation_wavelength=int(round(excitation_nm)),
-            emission_wavelength=int(round(emission_nm)),
+            excitation_wavelength=excitation,
+            emission_wavelength=emission,
             focal_height=focal_height_mm,
-            wells=well_objs,
+            wells=read_objs,
             use_new_return_type=True,
         )
         return self._grid_to_wells(result[0]["data"], well_objs, wells)
@@ -1130,11 +1224,18 @@ class CytationReader:
         integration_time_s: float = 1.0,
     ) -> dict[str, float]:
         well_objs = self._wells_for(wells)
+        # Padded read — see _luminescence_checksum.
+        read_objs = self._pad_for_checksum(
+            well_objs,
+            (integration_time_s,),
+            checksum=self._luminescence_checksum,
+            what="luminescence",
+        )
         result = await self._call_frontend(
             "read_luminescence",
             focal_height=focal_height_mm,
             integration_time=integration_time_s,
-            wells=well_objs,
+            wells=read_objs,
             use_new_return_type=True,
         )
         return self._grid_to_wells(result[0]["data"], well_objs, wells)
